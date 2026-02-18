@@ -1,0 +1,468 @@
+import { useEffect, useState } from "react";
+
+const BASE = "http://localhost:8000";
+
+function Card({ label, value, icon }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-2">
+        {icon} {label}
+      </p>
+      <p className="text-gray-800 text-base font-medium leading-relaxed">{value}</p>
+    </div>
+  );
+}
+
+function Input({ label, name, value, onChange, placeholder, type = "text" }) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold uppercase tracking-widest text-gray-400 mb-1">
+        {label}
+      </label>
+      <input
+        type={type}
+        name={name}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-gray-300"
+      />
+    </div>
+  );
+}
+
+const DEFAULT_FORM = {
+  diet: "",
+  commute_mode: "",
+  wake_time: "",
+  focus_goal: "",
+  event_text: "",
+};
+
+export default function App() {
+  const [form, setForm]       = useState(DEFAULT_FORM);
+  const [plan, setPlan]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [error, setError]     = useState(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [savedProfile, setSavedProfile] = useState(null);
+  const [recentPlans, setRecentPlans] = useState([]);
+  const [expandedPlan, setExpandedPlan] = useState(null);
+  const [showArchitecture, setShowArchitecture] = useState(false);
+
+  // Restore saved user_id and fetch profile + plan on mount
+  useEffect(() => {
+    const saved = localStorage.getItem("user_id");
+    if (saved) {
+      fetchProfile(saved);
+      fetchPlan(saved);
+      fetchRecentPlans(saved);
+    }
+  }, []);
+
+  const fetchProfile = async (uid) => {
+    try {
+      const res = await fetch(`${BASE}/get-profile?user_id=${uid}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSavedProfile(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch profile:", err);
+    }
+  };
+
+  const fetchRecentPlans = async (uid) => {
+    try {
+      const res = await fetch(`${BASE}/plans?user_id=${uid}`);
+      if (res.ok) {
+        const data = await res.json();
+        setRecentPlans(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch recent plans:", err);
+    }
+  };
+
+  const handleChange = (e) =>
+    setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+
+  const handleSaveAndGenerate = async () => {
+    if (!form.diet || !form.commute_mode || !form.wake_time || !form.focus_goal) {
+      setError("Please fill in all profile fields.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setPlan(null);
+
+    try {
+      // 1. Create user profile
+      const userRes = await fetch(`${BASE}/create-user`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          diet:         form.diet,
+          commute_mode: form.commute_mode,
+          wake_time:    form.wake_time,
+          focus_goal:   form.focus_goal,
+        }),
+      });
+      if (!userRes.ok) throw new Error("Failed to create user profile.");
+      const { user_id } = await userRes.json();
+      localStorage.setItem("user_id", user_id);
+
+      // 2. Add event if provided
+      if (form.event_text.trim()) {
+        await fetch(`${BASE}/add-event`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id, event_text: form.event_text }),
+        });
+      }
+
+      // 3. Fetch profile and generate plan
+      await fetchProfile(user_id);
+      await fetchPlan(user_id);
+      await fetchRecentPlans(user_id);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fetchPlan = async (uid) => {
+    setLoading(true);
+    setError(null);
+    setLogsOpen(false);
+    try {
+      const res = await fetch(`${BASE}/morning-plan?user_id=${uid}`);
+      if (!res.ok) throw new Error("Failed to fetch morning plan.");
+      const data = await res.json();
+      setPlan(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    const uid = localStorage.getItem("user_id");
+    if (uid) {
+      await fetchPlan(uid);
+      await fetchRecentPlans(uid);
+    } else {
+      setError("No user profile found. Save profile first.");
+    }
+  };
+
+  const agentLogs = plan ? [
+    { agent: "ScheduleAgent",   message: plan.agent_logs?.schedule   ?? "—" },
+    { agent: "LogisticsAgent",  message: plan.agent_logs?.logistics   ?? "—" },
+    { agent: "PreferenceAgent", message: plan.agent_logs?.preference  ?? "—" },
+    { agent: "SupervisorAgent", message: "Aggregated agent outputs and calculated confidence." },
+  ] : [];
+
+  return (
+    <div className="min-h-screen bg-gray-50 px-4 py-12">
+      <div className="w-full max-w-xl mx-auto space-y-6">
+
+        {/* Header */}
+        <div className="text-center relative">
+          <div className="absolute top-0 right-0 flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-full text-xs font-medium text-gray-700">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+            </span>
+            Agents Active
+          </div>
+          <h1 className="text-4xl font-bold text-gray-900 tracking-tight">Morning Planner</h1>
+          <p className="text-sm text-gray-400 mt-2 tracking-wide">
+            Autonomous Multi-Agent Morning System
+          </p>
+          <button
+            onClick={() => setShowArchitecture(true)}
+            className="mt-4 text-xs text-gray-500 hover:text-gray-700 underline transition-colors"
+          >
+            View Architecture
+          </button>
+        </div>
+
+        {/* Architecture Modal */}
+        {showArchitecture && (
+          <div
+            className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 px-4"
+            onClick={() => setShowArchitecture(false)}
+          >
+            <div
+              className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">System Architecture</h2>
+                <button
+                  onClick={() => setShowArchitecture(false)}
+                  className="text-gray-400 hover:text-gray-600 text-3xl leading-none font-light"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="bg-gray-50 rounded-xl p-8 font-mono text-sm text-gray-700 leading-loose">
+                <div className="space-y-3 text-center">
+                  <div className="font-semibold">User (React Frontend)</div>
+                  <div className="text-gray-400">↓</div>
+                  <div className="font-semibold">FastAPI Backend</div>
+                  <div className="text-gray-400">↓</div>
+                  <div className="font-semibold">Supervisor Agent</div>
+                  <div className="text-gray-400">↓</div>
+                  <div className="flex justify-center gap-6 py-2">
+                    <div>Schedule</div>
+                    <div>Logistics</div>
+                    <div>Preference</div>
+                  </div>
+                  <div className="text-gray-400">↓</div>
+                  <div className="font-semibold">OpenRouter API</div>
+                  <div className="text-gray-400">↓</div>
+                  <div className="font-semibold">Supabase Memory</div>
+                  <div className="text-gray-400">↓</div>
+                  <div className="font-semibold text-green-600">Aggregated Plan</div>
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500 mt-6 text-center leading-relaxed">
+                Multi-agent coordination system with persistent memory<br/>
+                and autonomous decision-making capabilities
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Profile Form */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+          <p className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+            Your Profile
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Diet"          name="diet"          value={form.diet}          onChange={handleChange} placeholder="e.g. Vegan" />
+            <Input label="Commute Mode"  name="commute_mode"  value={form.commute_mode}  onChange={handleChange} placeholder="e.g. Bus" />
+            <Input label="Wake Time"     name="wake_time"     value={form.wake_time}     onChange={handleChange} placeholder="e.g. 7:00 AM" />
+            <Input label="Focus Goal"    name="focus_goal"    value={form.focus_goal}    onChange={handleChange} placeholder="e.g. Study" />
+          </div>
+
+          {/* Today's Events */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-gray-400 mb-1">
+              Today's Events
+            </label>
+            <textarea
+              name="event_text"
+              value={form.event_text}
+              onChange={handleChange}
+              placeholder="e.g. 9 AM lecture, 12 PM assignment deadline"
+              rows={2}
+              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-gray-300 resize-none"
+            />
+          </div>
+
+          <button
+            onClick={handleSaveAndGenerate}
+            disabled={saving}
+            className="w-full bg-gray-900 hover:bg-gray-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl py-3 transition-colors"
+          >
+            {saving ? "Saving & Generating..." : "Save Profile & Generate Plan"}
+          </button>
+        </div>
+
+        {/* Loaded From Memory */}
+        {savedProfile && (
+          <div className="bg-gray-50 rounded-2xl border border-gray-200 p-6 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-2">
+              🧠 Loaded From Memory
+            </p>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Diet</p>
+                <p className="text-gray-700 font-medium">{savedProfile.diet}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Commute Mode</p>
+                <p className="text-gray-700 font-medium">{savedProfile.commute_mode}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Wake Time</p>
+                <p className="text-gray-700 font-medium">{savedProfile.wake_time}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Focus Goal</p>
+                <p className="text-gray-700 font-medium">{savedProfile.focus_goal}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 text-red-600 rounded-2xl px-6 py-4 text-sm text-center">
+            {error}
+          </div>
+        )}
+
+        {/* Loading */}
+        {loading && (
+          <div className="text-center text-gray-400 text-sm py-10">
+            Agents are planning your morning...
+          </div>
+        )}
+
+        {/* Plan */}
+        {plan && (
+          <div className="space-y-4">
+
+            {plan.needs_human && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 rounded-2xl px-6 py-4 text-sm font-medium text-center">
+                Supervisor requests human confirmation
+              </div>
+            )}
+
+            <Card label="Meal"     icon="🍽" value={plan.meal} />
+            <Card label="Route"    icon="🗺" value={plan.route} />
+            <Card label="Priority" icon="📌" value={plan.priority} />
+
+            {/* Confidence */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
+                📊 Confidence
+              </p>
+              <div className="flex items-center gap-4">
+                <div className="flex-1 bg-gray-100 rounded-full h-2">
+                  <div
+                    className="h-2 rounded-full bg-gray-800"
+                    style={{ width: `${Math.round(plan.confidence * 100)}%` }}
+                  />
+                </div>
+                <span className="text-gray-800 font-semibold text-sm w-10 text-right">
+                  {Math.round(plan.confidence * 100)}%
+                </span>
+              </div>
+            </div>
+
+            {/* Supervisor Reasoning */}
+            {plan.reasoning && (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
+                  💬 Supervisor Reasoning
+                </p>
+                <p className="text-gray-700 text-sm leading-relaxed">{plan.reasoning}</p>
+              </div>
+            )}
+
+            {/* Agent Logs */}
+            <div className="rounded-2xl border border-gray-200 overflow-hidden">
+              <button
+                onClick={() => setLogsOpen((p) => !p)}
+                className="w-full flex items-center justify-between px-6 py-4 bg-gray-100 hover:bg-gray-200 transition-colors text-left"
+              >
+                <span className="text-xs font-semibold uppercase tracking-widest text-gray-500 font-mono">
+                  Agent Reasoning
+                </span>
+                <span className="text-gray-400 text-xs font-mono">
+                  {logsOpen ? "▲ hide" : "▼ show"}
+                </span>
+              </button>
+              {logsOpen && (
+                <div className="bg-gray-50 px-6 py-4 space-y-3">
+                  {agentLogs.map(({ agent, message }) => (
+                    <div key={agent}>
+                      <p className="text-xs font-semibold text-gray-500 font-mono mb-0.5">{agent}</p>
+                      <p className="text-xs text-gray-700 font-mono">› {message}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => alert("Morning plan approved and executing")}
+                className="flex-1 bg-gray-900 hover:bg-gray-700 text-white text-sm font-semibold rounded-xl py-3 transition-colors"
+              >
+                Approve Plan
+              </button>
+              <button
+                onClick={handleRegenerate}
+                className="flex-1 bg-white hover:bg-gray-50 text-gray-700 text-sm font-semibold rounded-xl py-3 border border-gray-200 transition-colors"
+              >
+                Regenerate
+              </button>
+            </div>
+
+          </div>
+        )}
+
+        {/* Recent Plans */}
+        {recentPlans.length > 0 && (
+          <div className="space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">
+              📜 Recent Plans
+            </p>
+            {recentPlans.map((item) => {
+              const planData = item.plan;
+              const timestamp = new Date(item.created_at).toLocaleString();
+              const summary = planData.reasoning
+                ? planData.reasoning.slice(0, 120) + (planData.reasoning.length > 120 ? "..." : "")
+                : "No summary available";
+              const isExpanded = expandedPlan === item.id;
+
+              return (
+                <div key={item.id} className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+                  <button
+                    onClick={() => setExpandedPlan(isExpanded ? null : item.id)}
+                    className="w-full px-6 py-4 text-left hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-gray-400 mb-1">{timestamp}</p>
+                        <p className="text-sm text-gray-700 leading-relaxed">{summary}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-xs font-semibold text-gray-600">
+                          {Math.round(planData.confidence * 100)}%
+                        </span>
+                        <span className="text-gray-400 text-xs">
+                          {isExpanded ? "▲" : "▼"}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="border-t border-gray-200 px-6 py-4 bg-gray-50 space-y-3 text-sm">
+                      <div>
+                        <p className="text-xs text-gray-400 mb-1">Meal</p>
+                        <p className="text-gray-700">{planData.meal}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400 mb-1">Route</p>
+                        <p className="text-gray-700">{planData.route}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400 mb-1">Priority</p>
+                        <p className="text-gray-700">{planData.priority}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}

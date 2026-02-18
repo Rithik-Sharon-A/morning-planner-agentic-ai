@@ -1,0 +1,8 @@
+fastapi==0.129.0
+uvicorn==0.41.0
+crewai==1.9.3
+langchain==1.2.10
+langchain-openai==1.1.10
+openai==1.83.0
+python-dotenv==1.1.1
+pydantic==2.11.10
