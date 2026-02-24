@@ -12,7 +12,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,6 +35,16 @@ class EventIn(BaseModel):
 @app.get("/")
 async def root():
     return {"status": "Morning Agent Running"}
+
+
+@app.get("/models")
+def get_models():
+    return {
+        "schedule_model": os.getenv("SCHEDULE_MODEL"),
+        "logistics_model": os.getenv("LOGISTICS_MODEL"),
+        "preference_model": os.getenv("PREFERENCE_MODEL"),
+        "supervisor_model": os.getenv("SUPERVISOR_MODEL"),
+    }
 
 
 @app.post("/create-user")
@@ -72,10 +82,8 @@ async def get_profile(user_id: str = Query(...)):
     try:
         res = supabase.table("user_profile").select("*").eq("id", user_id).execute()
         if not res.data:
-            raise HTTPException(status_code=404, detail="Profile not found")
+            return None  # 200 + null so frontend can clear stale user_id
         return res.data[0]
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

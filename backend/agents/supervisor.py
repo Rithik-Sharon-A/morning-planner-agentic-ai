@@ -2,6 +2,7 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 from . import schedule, logistics, preference
+from .execution import execute_plan
 
 load_dotenv()
 
@@ -41,8 +42,8 @@ class SupervisorAgent:
             )
             reasoning = summary.choices[0].message.content.strip()
 
-            return {
-                "meal":       logistics_out,
+            decision = {
+                "meal":       preference_out,
                 "route":      logistics_out,
                 "priority":   schedule_out,
                 "confidence": 0.75,
@@ -53,6 +54,14 @@ class SupervisorAgent:
                     "preference": preference_out,
                 },
             }
+
+            execution_result = execute_plan({
+                "route": logistics_out,
+                "meal": preference_out
+            })
+            decision["execution"] = execution_result
+
+            return decision
 
         except Exception as e:
             return self._fallback(str(e))
