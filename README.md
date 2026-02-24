@@ -1,84 +1,92 @@
-# Morning Planner – Autonomous Multi-Agent Student Life Planner
+# Agentic Student Life Planner
 
-An agentic AI system that coordinates specialized agents to generate personalized morning plans. This is not a chatbot—it is an autonomous decision pipeline with persistent memory and tool execution.
+A multi-agent AI planner that generates personalized morning routines using CrewAI. Each agent specializes in a distinct task (meal, logistics, schedule). Different LLMs are assigned per agent via OpenRouter. User memories are stored in Supabase and injected into planning.
 
----
-
-## Key Highlights
-
-- **Multi-agent architecture** — Supervisor + Schedule + Logistics + Preference + Execution agents
-- **Multi-model reasoning** via OpenRouter (per-agent model config)
-- **Persistent memory** using Supabase (profiles, events, plan history)
-- **Autonomous execution** — ride booking (Rapido) + meal scheduling (FoodService) via Execution Agent
-- **Confidence scoring** with human-in-the-loop when below threshold
-- **Zero hardcoded responses** — all outputs from LLM calls
+**Highlights:** role-based agents, multi-model orchestration, persistent memory, clear frontend/backend separation. This is an autonomous decision pipeline, not a chatbot.
 
 ---
 
-## Architecture Overview
+## 1. Overview
+
+This system coordinates specialized CrewAI agents to produce morning plans from user profile and events. The Supervisor aggregates outputs from Schedule, Logistics, and Preference agents. Each agent uses a configurable model via OpenRouter (e.g. GPT-4 Turbo for the Supervisor, Claude for Schedule, Llama for Preference). User profile, events, and free-form memories are stored in Supabase and passed into the planning context. The frontend (React) talks only to the FastAPI backend; all LLM routing is OpenRouter-only with no native Anthropic, Gemini, or Llama SDKs.
+
+---
+
+## 2. Architecture
 
 ```
-User → Agents → Supervisor → Execution → Supabase → UI
+        React
+          ↓
+       FastAPI
+          ↓
+   CrewAI Supervisor
+          ↓
+     Sub Agents
+  (Schedule / Logistics / Preference)
+          ↓
+       LiteLLM
+          ↓
+      OpenRouter
+          ↓
+  GPT / Claude / Llama
+
+Supabase: user profile, events, plain-text memory, generated plans.
 ```
 
-The user submits profile and events. Sub-agents (Schedule, Logistics, Preference) reason independently via OpenRouter. The Supervisor synthesizes their outputs and produces a plan. The Execution Agent runs tools (mock Rapido, meal scheduler). Results and plan are stored in Supabase and returned to the React UI.
+---
+
+## 3. Tech Stack
+
+| Layer    | Technologies |
+|----------|--------------|
+| **Frontend** | React, Vite, Tailwind |
+| **Backend**  | FastAPI, CrewAI, LiteLLM (internal), OpenRouter, Supabase |
+| **LLMs (examples)** | GPT-4 Turbo (Supervisor), Claude 3.5 Sonnet (Schedule), Llama 3.1 (Preference), GPT-4o-mini (Logistics) |
+
+Models are configured per agent in `.env` and can be changed without code edits.
 
 ---
 
-## Agents
+## 4. Agent Roles
 
-| Agent | Responsibility |
-|-------|----------------|
-| **Supervisor Agent** | Orchestrates sub-agents, aggregates outputs, produces final reasoning and confidence |
-| **Schedule Agent** | Determines task priorities from context and events |
-| **Logistics Agent** | Plans commute route (e.g. bike/Rapido) |
-| **Preference Agent** | Recommends meal based on diet and preferences |
-| **Execution Agent** | Runs tools: book Rapido (when route implies ride), schedule meal |
+| Agent | Role |
+|-------|------|
+| **Supervisor Agent** | Aggregates sub-agent outputs, computes confidence, requests human confirmation when below threshold. |
+| **Preference Agent** | Meal suggestions based on diet and preferences. |
+| **Logistics Agent** | Commute and route planning. |
+| **Schedule Agent** | Task prioritization from context and events. |
 
----
-
-## Tech Stack
-
-**Backend:** FastAPI, Python, OpenRouter, Supabase  
-
-**Frontend:** React, Vite, Tailwind  
-
-**Tools:** Mock Rapido, Mock Meal Scheduler (FoodService)
+Execution (e.g. mock ride/meal tools) runs after the crew returns the plan.
 
 ---
 
-## Demo Flow
+## 5. Environment Variables
 
-1. User enters profile (diet, commute, wake time, focus goal) and optional events.
-2. Data is stored in Supabase.
-3. Schedule, Logistics, and Preference agents reason independently via OpenRouter.
-4. Supervisor synthesizes outputs and computes confidence.
-5. Execution Agent performs actions (Rapido booking if route mentions bike/Rapido, meal scheduling).
-6. Confidence is returned; plan is stored.
-7. Plan (meal, route, priority, execution, reasoning) is displayed in the UI.
+Create a `.env` in `backend/` with at least:
 
----
+```env
+OPENROUTER_API_KEY=your_key_here
+SUPERVISOR_MODEL=openai/gpt-4-turbo
+PREFERENCE_MODEL=meta-llama/llama-3.1-8b-instruct
+LOGISTICS_MODEL=openai/gpt-4o-mini
+SCHEDULE_MODEL=anthropic/claude-3.5-sonnet
 
-## Why This Is Agentic
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_supabase_anon_key
+```
 
-- **Independent agents** — Schedule, Logistics, and Preference each call the LLM with their own role and context; no single monolithic prompt.
-- **Supervisor coordination** — One agent consumes sub-agent outputs and produces a final explanation and confidence score.
-- **Tool execution** — The Execution Agent invokes tools (Rapido, FoodService) based on the plan; the system acts, not only responds.
-- **Memory** — User profile and events live in Supabase; agents reason over stored context.
-- **Confidence gating** — When confidence is below threshold, the system flags "Needs Human" for review.
-
-**This is not a chatbot. It is an autonomous decision pipeline.**
+Model IDs are OpenRouter model names; you can switch providers (e.g. different Claude or GPT variants) by changing these variables.
 
 ---
 
-## Running Locally
+## 6. How to Run
 
 **Backend**
 
 ```bash
 cd backend
 pip install -r requirements.txt
-# Set .env: OPENROUTER_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY, etc.
+# Configure .env (see above)
 python main.py
 ```
 
@@ -94,12 +102,38 @@ npm run dev
 
 App: `http://localhost:5173`
 
-**Database:** Create Supabase project and tables (`user_profile`, `daily_events`, `generated_plans`) per your Supabase dashboard. Use the schema that matches the backend (e.g. `user_profile`: diet, commute_mode, wake_time, focus_goal; `daily_events`: user_id, event_text; `generated_plans`: user_id, plan JSONB).
+**Database:** Create a Supabase project and tables: `user_profile` (diet, commute_mode, wake_time, focus_goal), `daily_events` (user_id, event_text), `generated_plans` (user_id, plan JSONB), `user_memories` (user_id, content, created_at) for plain-text memory.
 
 ---
 
-## Future Improvements
+## 7. Key Features
 
-- Calendar integration for real schedule sync
-- Real Rapido / meal APIs instead of mocks
-- Mobile app (React Native or PWA)
+- **Multi-agent reasoning** — Schedule, Logistics, and Preference agents reason independently; Supervisor synthesizes.
+- **Multi-model routing** — One OpenRouter API key; per-agent models via `.env`.
+- **Persistent user memory** — Supabase stores profile, events, and free-text memories used in planning.
+- **Human-in-the-loop** — Confidence score and “Needs Human” when below threshold.
+- **Modular agent design** — All agents defined in `backend/agents/crewai_agents.py` using a shared LLM factory.
+
+---
+
+## 8. What Was Intentionally Removed
+
+To keep the system stable and simple:
+
+- **LangChain** — Removed; orchestration is CrewAI-only.
+- **Vector databases** — Removed; no embeddings or vector storage.
+- **RAG** — Removed; no retrieval-augmented generation.
+
+Memory is plain-text in Supabase; no embedding or vector dependencies.
+
+---
+
+## 9. Resume / Hackathon Description
+
+*Built a multi-agent AI planner using CrewAI with role-based model specialization via OpenRouter and persistent Supabase-backed memory.*
+
+---
+
+## License
+
+See repository for license information.
