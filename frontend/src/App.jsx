@@ -2,6 +2,24 @@ import { useEffect, useState } from "react";
 
 const BASE = "http://localhost:8000";
 
+function generateUUID() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function getUserId() {
+  let uid = localStorage.getItem("user_id");
+  if (!uid) {
+    uid = generateUUID();
+    localStorage.setItem("user_id", uid);
+  }
+  return uid;
+}
+
 function Card({ label, value, icon, agent, model }) {
   const sentences = value.split('.').map(s => s.trim()).filter(Boolean);
   const bullets = sentences.slice(0, 3);
@@ -59,12 +77,14 @@ export default function App() {
   const [savedProfile, setSavedProfile] = useState(null);
   const [recentPlans, setRecentPlans] = useState([]);
   const [expandedPlan, setExpandedPlan] = useState(null);
-  const [showArchitecture, setShowArchitecture] = useState(false);
   const [models, setModels] = useState(null);
   const [showMemory, setShowMemory] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [pipelineStep, setPipelineStep] = useState(0);
+  const [memoryContent, setMemoryContent] = useState("");
+  const [memorySaving, setMemorySaving] = useState(false);
+  const [memoryMessage, setMemoryMessage] = useState(null);
 
   // Fetch model config on mount
   useEffect(() => {
@@ -74,9 +94,10 @@ export default function App() {
       .catch(() => setModels(null));
   }, []);
 
-  // Restore saved user_id and fetch profile + plan on mount
+  // Restore saved user_id and fetch profile + plan on mount (ensure user_id exists)
   useEffect(() => {
     let cancelled = false;
+    getUserId();
     const saved = localStorage.getItem("user_id");
     if (!saved) return;
     (async () => {
@@ -186,6 +207,8 @@ export default function App() {
     setError(null);
     setLogsOpen(false);
     try {
+      console.log("Morning plan requested for user:", uid);
+      console.log("Memory enabled request");
       const res = await fetch(`${BASE}/morning-plan?user_id=${uid}`);
       if (!res.ok) throw new Error("Failed to fetch morning plan.");
       const data = await res.json();
@@ -198,12 +221,31 @@ export default function App() {
   };
 
   const handleRegenerate = async () => {
-    const uid = localStorage.getItem("user_id");
-    if (uid) {
-      await fetchPlan(uid);
-      await fetchRecentPlans(uid);
-    } else {
-      setError("No user profile found. Save profile first.");
+    const uid = getUserId();
+    await fetchPlan(uid);
+    await fetchRecentPlans(uid);
+  };
+
+  const handleSaveMemory = async () => {
+    const content = memoryContent.trim();
+    if (!content) return;
+    const uid = getUserId();
+    setMemorySaving(true);
+    setMemoryMessage(null);
+    try {
+      const res = await fetch(`${BASE}/add-memory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: uid, content }),
+      });
+      if (!res.ok) throw new Error("Failed to save memory");
+      setMemoryContent("");
+      setMemoryMessage("Memory saved");
+      console.log("Memory saved for user:", uid);
+    } catch (err) {
+      setMemoryMessage(err.message || "Failed to save memory");
+    } finally {
+      setMemorySaving(false);
     }
   };
 
@@ -231,12 +273,6 @@ export default function App() {
           <p className="text-sm text-gray-400 mt-2 tracking-wide">
             Autonomous Multi-Agent Morning System
           </p>
-          <button
-            onClick={() => setShowArchitecture(true)}
-            className="mt-4 text-xs text-gray-500 hover:text-gray-700 underline transition-colors"
-          >
-            View Architecture
-          </button>
         </div>
 
         {/* Agent Pills */}
@@ -270,56 +306,6 @@ export default function App() {
             <p className="text-xs text-gray-500 mt-1">Execution</p>
           </div>
         </div>
-
-        {/* Architecture Modal */}
-        {showArchitecture && (
-          <div
-            className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 px-4"
-            onClick={() => setShowArchitecture(false)}
-          >
-            <div
-              className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold text-gray-900">System Architecture</h2>
-                <button
-                  onClick={() => setShowArchitecture(false)}
-                  className="text-gray-400 hover:text-gray-600 text-3xl leading-none font-light"
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="bg-gray-50 rounded-xl p-8 font-mono text-sm text-gray-700 leading-loose">
-                <div className="space-y-3 text-center">
-                  <div className="font-semibold">User (React Frontend)</div>
-                  <div className="text-gray-400">↓</div>
-                  <div className="font-semibold">FastAPI Backend</div>
-                  <div className="text-gray-400">↓</div>
-                  <div className="font-semibold">Supervisor Agent</div>
-                  <div className="text-gray-400">↓</div>
-                  <div className="flex justify-center gap-6 py-2">
-                    <div>Schedule</div>
-                    <div>Logistics</div>
-                    <div>Preference</div>
-                  </div>
-                  <div className="text-gray-400">↓</div>
-                  <div className="font-semibold">OpenRouter API</div>
-                  <div className="text-gray-400">↓</div>
-                  <div className="font-semibold">Supabase Memory</div>
-                  <div className="text-gray-400">↓</div>
-                  <div className="font-semibold text-green-600">Aggregated Plan</div>
-                </div>
-              </div>
-
-              <p className="text-xs text-gray-500 mt-6 text-center leading-relaxed">
-                Multi-agent coordination system with persistent memory<br/>
-                and autonomous decision-making capabilities
-              </p>
-            </div>
-          </div>
-        )}
 
         {/* Profile Form */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
@@ -355,6 +341,34 @@ export default function App() {
           >
             {saving ? "Saving & Generating..." : "Save Profile & Generate Plan"}
           </button>
+        </div>
+
+        {/* Personal Memory */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-3">
+          <p className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+            Personal Memory
+          </p>
+          <textarea
+            value={memoryContent}
+            onChange={(e) => setMemoryContent(e.target.value)}
+            placeholder="Example: I prefer black coffee before gym"
+            rows={2}
+            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-gray-300 resize-none"
+          />
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleSaveMemory}
+              disabled={!memoryContent.trim() || memorySaving}
+              className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl px-4 py-2 transition-colors"
+            >
+              {memorySaving ? "Saving..." : "Save Memory"}
+            </button>
+            {memoryMessage && (
+              <span className={`text-sm ${memoryMessage === "Memory saved" ? "text-green-600" : "text-red-600"}`}>
+                {memoryMessage}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Loaded From Memory */}

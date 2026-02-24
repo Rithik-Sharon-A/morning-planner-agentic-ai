@@ -1,3 +1,10 @@
+# Prefer LiteLLM from short path (avoids Windows long-path error when installed in venv)
+import sys
+_site = getattr(sys, "litellm_site", r"C:\litellm_site")
+if _site not in sys.path:
+    sys.path.insert(0, _site)
+
+import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -5,9 +12,10 @@ from dotenv import load_dotenv
 import os
 from db import supabase
 from agents.supervisor import SupervisorAgent
+from memory.simple_memory import add_memory
 
 load_dotenv()
-
+logger = logging.getLogger(__name__)
 app = FastAPI()
 
 app.add_middleware(
@@ -29,6 +37,10 @@ class UserProfileIn(BaseModel):
 class EventIn(BaseModel):
     user_id: str
     event_text: str
+
+class MemoryIn(BaseModel):
+    user_id: str
+    content: str
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -59,9 +71,7 @@ async def create_user(body: UserProfileIn):
         user_id = res.data[0]["id"]
         return {"user_id": user_id}
     except Exception as e:
-        print(f"Error creating user: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error creating user")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -73,6 +83,20 @@ async def add_event(body: EventIn):
             "event_text": body.event_text,
         }).execute()
         return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/add-memory")
+async def add_memory_endpoint(body: MemoryIn):
+    try:
+        success = add_memory(body.user_id, body.content)
+        if success:
+            logger.info(f"Memory added for user_id: {body.user_id}")
+            return {"status": "ok"}
+        raise HTTPException(status_code=500, detail="Failed to add memory")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -113,7 +137,7 @@ async def morning_plan(user_id: str = Query(default=None)):
             events = [row["event_text"] for row in e.data] if e.data else []
 
         supervisor = SupervisorAgent()
-        decision = supervisor.get_decision(profile=profile, events=events)
+        decision = supervisor.get_decision(profile=profile, events=events, user_id=user_id)
 
         # Store generated plan
         if user_id:

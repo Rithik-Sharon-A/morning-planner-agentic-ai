@@ -1,46 +1,44 @@
-from openai import OpenAI
 import os
+import logging
 from dotenv import load_dotenv
-from . import schedule, logistics, preference
+from .crewai_agents import (
+    run_crew,
+    supervisor_agent,
+    preference_agent,
+    logistics_agent,
+    schedule_agent,
+)
 from .execution import execute_plan
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class SupervisorAgent:
-    def __init__(self):
-        self.client = OpenAI(
-            api_key=os.getenv("OPENROUTER_API_KEY"),
-            base_url="https://openrouter.ai/api/v1",
-        )
-        self.model = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-
-    def get_decision(self, profile: dict = None, events: list = None):
+    def get_decision(self, profile: dict = None, events: list = None, user_id: str = None):
         try:
-            # Build context string injected into every sub-agent prompt
             context = self._build_context(profile, events)
+            
+            enriched_context = context
+            if user_id:
+                try:
+                    from memory.simple_memory import retrieve_memories
+                    memories = retrieve_memories(user_id, limit=5)
+                    if memories:
+                        memory_lines = "\n".join(f"- {m}" for m in memories)
+                        enriched_context = (
+                            f"User past memories:\n{memory_lines}\n\n"
+                            f"Current request:\n{context}"
+                        )
+                        logger.info(f"Past memories injected: {len(memories)}")
+                except Exception as e:
+                    logger.warning(f"Memory retrieval failed, continuing without: {e}")
 
-            schedule_out   = schedule.get_output(self.client, self.model, context)
-            logistics_out  = logistics.get_output(self.client, self.model, context)
-            preference_out = preference.get_output(self.client, self.model, context)
-
-            # Supervisor summary
-            summary = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "You are a Supervisor Agent. Given these sub-agent outputs, "
-                        "write a 2–3 sentence natural language explanation of the final morning plan.\n\n"
-                        f"Context: {context}\n"
-                        f"Schedule Agent: {schedule_out}\n"
-                        f"Logistics Agent: {logistics_out}\n"
-                        f"Preference Agent: {preference_out}\n\n"
-                        "Explanation:"
-                    )
-                }]
-            )
-            reasoning = summary.choices[0].message.content.strip()
+            crew_result    = run_crew(enriched_context)
+            schedule_out   = crew_result["schedule_out"]
+            logistics_out  = crew_result["logistics_out"]
+            preference_out = crew_result["preference_out"]
+            reasoning      = crew_result["reasoning"]
 
             decision = {
                 "meal":       preference_out,
@@ -57,9 +55,13 @@ class SupervisorAgent:
 
             execution_result = execute_plan({
                 "route": logistics_out,
-                "meal": preference_out
+                "meal":  preference_out,
             })
             decision["execution"] = execution_result
+
+            threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
+            if decision["confidence"] < threshold:
+                decision["needs_human"] = True
 
             return decision
 
@@ -91,4 +93,5 @@ class SupervisorAgent:
                 "logistics":  "Agent unavailable",
                 "preference": "Agent unavailable",
             },
+            "execution": None,
         }
