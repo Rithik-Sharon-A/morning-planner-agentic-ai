@@ -10,11 +10,9 @@ A FastAPI-based backend service that uses CrewAI agents to help students plan th
   - **Logistics Agent**: Plans transportation, meals, and campus resources
   - **Preference Agent**: Analyzes learning styles and personal preferences
 
-- **OpenRouter Integration**: Access multiple AI models through one API:
-  - Switch between GPT-4, Claude, Llama, and more
-  - Automatic fallback to OpenAI if OpenRouter fails
-  - Cost optimization by choosing appropriate models
-  - See [OPENROUTER_SETUP.md](OPENROUTER_SETUP.md) for details
+- **Tool Execution Agent**: LangChain-based execution layer; writes events to Google Calendar when Supervisor confidence ≥ threshold.
+
+- **OpenRouter Integration**: Access multiple AI models through one API (LLMs via LiteLLM/OpenRouter).
 
 ## Setup
 
@@ -46,35 +44,34 @@ pip install -r requirements.txt
 
 Create a `.env` file in the backend directory:
 
-**Option A: Use OpenRouter (Recommended)**
 ```env
-# OpenRouter Configuration
-USE_OPENROUTER=true
+# Required: OpenRouter (LLMs via LiteLLM)
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
-OPENROUTER_MODEL=openai/gpt-4o-mini
 
-# Fallback to OpenAI
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4o-mini
+# Required: Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
 
-# API Configuration
+# Optional: Model overrides (defaults shown)
+SUPERVISOR_MODEL=openai/gpt-4-turbo
+SCHEDULE_MODEL=anthropic/claude-3.5-sonnet
+LOGISTICS_MODEL=openai/gpt-4o-mini
+PREFERENCE_MODEL=meta-llama/llama-3.1-8b-instruct
+
+# Optional: Confidence threshold for auto-execution (default 0.7)
+CONFIDENCE_THRESHOLD=0.7
+
+# Optional: API server
 API_HOST=0.0.0.0
 API_PORT=8000
+
+# Optional: Google Calendar (for Tool Execution Agent)
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REFRESH_TOKEN=...
 ```
 
-**Option B: Use Direct OpenAI**
-```env
-# OpenAI Configuration
-USE_OPENROUTER=false
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4o-mini
-
-# API Configuration
-API_HOST=0.0.0.0
-API_PORT=8000
-```
-
-📖 **See [OPENROUTER_SETUP.md](OPENROUTER_SETUP.md) for detailed OpenRouter configuration**
+See [docs/GOOGLE_OAUTH_SETUP.md](docs/GOOGLE_OAUTH_SETUP.md) for Google Calendar OAuth setup.
 
 ## Running the Server
 
@@ -82,7 +79,7 @@ API_PORT=8000
 python main.py
 ```
 
-Or with uvicorn directly:
+Or with uvicorn:
 
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -90,113 +87,80 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ## API Endpoints
 
-### GET `/`
-Health check endpoint
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Health / status |
+| GET | `/models` | Return configured model names (debug) |
+| POST | `/create-user` | Create or update user profile |
+| GET | `/get-profile` | Get profile by `user_id` query |
+| POST | `/add-event` | Add daily event text for user |
+| POST | `/add-memory` | Add personal memory for user |
+| GET | `/plans` | Get recent generated plans for user |
+| GET | `/morning-plan` | Generate morning plan (Supervisor + crew + optional calendar execution) |
+| POST | `/execute-calendar-events` | Run Tool Execution Agent to write events to Google Calendar |
 
-### POST `/generate-plan`
-Generate a comprehensive student life plan
+### GET `/morning-plan?user_id=...`
 
-**Request Body:**
+Returns a decision object with `meal`, `route`, `priority`, `confidence`, `reasoning`, `agent_logs`, `models`, `execution` (ride/meal/calendar when applicable), and `needs_human` when confidence &lt; threshold.
+
+### POST `/execute-calendar-events`
+
+**Request body:**
 ```json
 {
-  "classes": [
+  "user_id": "optional-uuid",
+  "events": [
     {
-      "name": "Data Structures",
-      "time": "9:00 AM",
-      "days": ["Monday", "Wednesday", "Friday"],
-      "location": "Room 101"
+      "title": "Study session",
+      "start_time": "2025-03-03T14:00:00Z",
+      "end_time": "2025-03-03T16:00:00Z",
+      "description": "CS101 revision"
     }
-  ],
-  "assignments": [
-    {
-      "name": "Project 1",
-      "due_date": "2026-03-01",
-      "priority": "high"
-    }
-  ],
-  "exams": [
-    {
-      "name": "Midterm Exam",
-      "date": "2026-03-15",
-      "prep_time": "2 weeks"
-    }
-  ],
-  "preferences": {
-    "learning_style": "visual",
-    "peak_hours": ["morning"],
-    "study_duration": 50,
-    "break_duration": 10,
-    "social_study": false
-  },
-  "logistics": {
-    "location": "Off-campus",
-    "commute_time": "30 minutes"
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "schedule": {
-    "weekly_plan": "...",
-    "study_blocks": [],
-    "class_times": [],
-    "assignment_deadlines": []
-  },
-  "recommendations": [
-    "Personalized study tips..."
-  ],
-  "logistics_plan": {
-    "transportation": "...",
-    "meals": "...",
-    "resources": "..."
-  },
-  "study_tips": [
-    "Follow the personalized schedule",
-    "Take regular breaks"
   ]
 }
 ```
 
-### GET `/health`
-Check API health status
+Datetimes must be ISO 8601 (e.g. `2025-03-03T09:00:00Z`).
 
 ## Project Structure
 
 ```
 backend/
-├── main.py                 # FastAPI application
-├── .env                    # Environment variables
-├── requirements.txt        # Python dependencies
-├── README.md              # This file
-└── agents/
-    ├── __init__.py        # Package initialization
-    ├── supervisor.py      # Supervisor agent
-    ├── schedule.py        # Schedule optimization agent
-    ├── logistics.py       # Logistics planning agent
-    └── preference.py      # Preference analysis agent
+├── main.py                 # FastAPI app and routes
+├── db.py                   # Supabase client
+├── llm_factory.py          # OpenRouter LLM for CrewAI
+├── tools.py                # Plan tools (ride, meal)
+├── requirements.txt
+├── run.ps1
+├── agents/
+│   ├── __init__.py
+│   ├── supervisor.py       # Supervisor agent
+│   ├── crewai_agents.py    # Schedule, Logistics, Preference, Supervisor (CrewAI)
+│   ├── execution.py        # Plan execution + calendar gate
+│   └── tool_execution/     # LangChain Tool Execution Agent
+│       ├── agent.py
+│       └── tools/
+│           └── google_calendar.py
+├── memory/
+│   └── simple_memory.py    # User memories (Supabase)
+├── docs/
+│   ├── ARCHITECTURE_TOOL_EXECUTION.md
+│   ├── GOOGLE_OAUTH_SETUP.md
+│   └── CLEANUP_AND_REFACTOR_REPORT.md
+└── scripts/
+    └── safe_remove_unused_agents.ps1
 ```
 
 ## Development
 
-### Testing the API
-
-You can test the API using:
-
-1. **Swagger UI**: Navigate to `http://localhost:8000/docs`
-2. **ReDoc**: Navigate to `http://localhost:8000/redoc`
-3. **cURL**:
-```bash
-curl -X POST "http://localhost:8000/generate-plan" \
-  -H "Content-Type: application/json" \
-  -d @sample_request.json
-```
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
 
 ## Technologies Used
 
-- **FastAPI**: Modern web framework for building APIs
-- **CrewAI**: Multi-agent orchestration framework
-- **LangChain**: LLM application framework
-- **OpenAI**: GPT models for intelligent agents
-- **Uvicorn**: ASGI server for FastAPI
+- **FastAPI** – API framework
+- **CrewAI** – Multi-agent orchestration
+- **LangChain** – Tool Execution Agent (calendar tool)
+- **LiteLLM / OpenRouter** – LLM access
+- **Supabase** – Profile, events, plans, memories
+- **Uvicorn** – ASGI server

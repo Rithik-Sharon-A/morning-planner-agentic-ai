@@ -1,14 +1,8 @@
 import os
 import logging
 from dotenv import load_dotenv
-from .crewai_agents import (
-    run_crew,
-    supervisor_agent,
-    preference_agent,
-    logistics_agent,
-    schedule_agent,
-)
-from .execution import execute_plan
+from .crewai_agents import MemoryContext, run_crew
+from .execution import execute_plan, execute_calendar_if_confident
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -17,24 +11,9 @@ logger = logging.getLogger(__name__)
 class SupervisorAgent:
     def get_decision(self, profile: dict = None, events: list = None, user_id: str = None):
         try:
-            context = self._build_context(profile, events)
-            
-            enriched_context = context
-            if user_id:
-                try:
-                    from memory.simple_memory import retrieve_memories
-                    memories = retrieve_memories(user_id, limit=5)
-                    if memories:
-                        memory_lines = "\n".join(f"- {m}" for m in memories)
-                        enriched_context = (
-                            f"User past memories:\n{memory_lines}\n\n"
-                            f"Current request:\n{context}"
-                        )
-                        logger.info(f"Past memories injected: {len(memories)}")
-                except Exception as e:
-                    logger.warning(f"Memory retrieval failed, continuing without: {e}")
-
-            crew_result    = run_crew(enriched_context)
+            memory_context = self._build_memory_context(profile=profile, events=events, user_id=user_id)
+            logger.info("[memory] MemoryContext personal_memory count=%s", len(memory_context.get("personal_memory") or []))
+            crew_result    = run_crew(memory_context, user_id=user_id)
             schedule_out   = crew_result["schedule_out"]
             logistics_out  = crew_result["logistics_out"]
             preference_out = crew_result["preference_out"]
@@ -51,15 +30,26 @@ class SupervisorAgent:
                     "logistics":  logistics_out,
                     "preference": preference_out,
                 },
+                "models": {
+                    "preference": os.getenv("PREFERENCE_MODEL", ""),
+                    "logistics":  os.getenv("LOGISTICS_MODEL", ""),
+                    "schedule":   os.getenv("SCHEDULE_MODEL", ""),
+                },
             }
 
-            execution_result = execute_plan({
-                "route": logistics_out,
-                "meal":  preference_out,
-            })
+            execution_result = execute_plan(
+                {"route": logistics_out, "meal": preference_out},
+                user_id=user_id,
+            )
+            threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
+            # Only trigger Tool Execution Agent (Google Calendar) when confidence >= threshold
+            calendar_result = execute_calendar_if_confident(
+                decision, profile=profile, user_id=user_id, threshold=threshold
+            )
+            if calendar_result is not None:
+                execution_result["calendar"] = calendar_result
             decision["execution"] = execution_result
 
-            threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
             if decision["confidence"] < threshold:
                 decision["needs_human"] = True
 
@@ -68,18 +58,21 @@ class SupervisorAgent:
         except Exception as e:
             return self._fallback(str(e))
 
-    def _build_context(self, profile: dict, events: list) -> str:
-        parts = []
-        if profile:
-            parts.append(
-                f"User profile — diet: {profile.get('diet')}, "
-                f"commute: {profile.get('commute_mode')}, "
-                f"wake time: {profile.get('wake_time')}, "
-                f"focus goal: {profile.get('focus_goal')}."
-            )
-        if events:
-            parts.append(f"Today's events: {', '.join(events)}.")
-        return " ".join(parts) if parts else "No user context provided."
+    def _build_memory_context(self, profile: dict = None, events: list = None, user_id: str = None) -> MemoryContext:
+        """Build MemoryContext: profile, personal_memory (from Supabase), events. All agents receive this."""
+        personal_memory: list = []
+        if user_id:
+            try:
+                from memory.simple_memory import retrieve_all_memories_asc
+                personal_memory = retrieve_all_memories_asc(user_id)
+                logger.info("[memory] fetched personal_memory for user_id=%s count=%s", user_id, len(personal_memory))
+            except Exception as e:
+                logger.warning("[memory] fetch failed for user_id=%s: %s", user_id, e)
+        return {
+            "profile": profile or {},
+            "personal_memory": personal_memory,
+            "events": events or [],
+        }
 
     def _fallback(self, error=""):
         return {
@@ -93,5 +86,7 @@ class SupervisorAgent:
                 "logistics":  "Agent unavailable",
                 "preference": "Agent unavailable",
             },
+            "models": {"preference": "", "logistics": "", "schedule": ""},
             "execution": None,
+            "needs_human": True,
         }
