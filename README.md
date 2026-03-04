@@ -1,8 +1,137 @@
-# Agentic Student Life Planner
+# Morning Planner — Agentic AI
 
-A multi-agent AI planner that generates personalized morning routines using CrewAI. Each agent specializes in a distinct task (meal, logistics, schedule). Different LLMs are assigned per agent via OpenRouter. User memories are stored in Supabase and injected into planning.
+A multi-agent AI planner that generates personalized morning routines using CrewAI. Each agent specializes in a distinct task (meal, logistics, schedule). Different LLMs are assigned per agent via OpenRouter. User memories are stored in Supabase and injected into planning. Login is handled via Google OAuth through Supabase Auth.
 
-**Highlights:** role-based agents, multi-model orchestration, persistent memory, clear frontend/backend separation. This is an autonomous decision pipeline, not a chatbot.
+**Highlights:** role-based agents, multi-model orchestration, persistent memory, Google OAuth, clear frontend/backend separation. This is an autonomous decision pipeline, not a chatbot.
+
+---
+
+## New Teammate Setup
+
+### Prerequisites
+
+Make sure you have these installed:
+- [Git](https://git-scm.com/)
+- [Node.js 18+](https://nodejs.org/) (check: `node -v`)
+- [Python 3.10+](https://python.org/) (check: `python --version`)
+
+---
+
+### Step 1 — Clone the repo
+
+```bash
+git clone https://github.com/Rithik-Sharon-A/morning-planner-agentic-ai.git
+cd morning-planner-agentic-ai
+git checkout SK_Testing
+```
+
+---
+
+### Step 2 — Backend setup
+
+```bash
+cd backend
+
+# Create and activate virtual environment
+python -m venv venv
+
+# Windows
+.\venv\Scripts\activate
+
+# Mac/Linux
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+Create `backend/.env` — ask a teammate for the values:
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-...
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=eyJ...
+SUPERVISOR_MODEL=openai/gpt-4o-mini
+SCHEDULE_MODEL=anthropic/claude-3-haiku
+LOGISTICS_MODEL=openai/gpt-4o-mini
+PREFERENCE_MODEL=meta-llama/llama-3.1-8b-instruct
+```
+
+Start the backend:
+
+```bash
+# Windows (from backend/)
+.\venv\Scripts\uvicorn main:app --reload
+
+# Mac/Linux
+uvicorn main:app --reload
+```
+
+Backend runs at `http://localhost:8000`. Verify: open `http://localhost:8000/docs`
+
+---
+
+### Step 3 — Frontend setup
+
+```bash
+cd frontend
+npm install
+```
+
+Create `frontend/.env` — ask a teammate for the values:
+
+```env
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJ...
+```
+
+Start the frontend:
+
+```bash
+npm run dev
+```
+
+Frontend runs at `http://localhost:5173`
+
+---
+
+### Step 4 — Verify everything works
+
+1. Open `http://localhost:5173` — you should see the **Morning Planner login screen**
+2. Click **Continue with Google** — sign in with your Google account
+3. After login you should land on the main planner UI
+4. Fill in the profile form and click **Save Profile & Generate Plan**
+
+---
+
+### Folder structure
+
+```
+morning-planner-agentic-ai/
+├── backend/
+│   ├── main.py              # FastAPI app + all endpoints
+│   ├── db.py                # Supabase client
+│   ├── llm_factory.py       # LiteLLM / OpenRouter config
+│   ├── tools.py             # Tool definitions
+│   ├── requirements.txt
+│   ├── .env                 # ← you create this (never commit)
+│   ├── agents/
+│   │   ├── supervisor.py    # Supervisor agent (orchestrator)
+│   │   ├── crewai_agents.py # Schedule / Logistics / Preference agents
+│   │   └── execution.py     # Post-plan execution logic
+│   └── memory/
+│       └── simple_memory.py # Supabase memory read/write
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx          # Main app + all UI
+│   │   ├── LoginScreen.jsx  # Google OAuth login page
+│   │   └── supabaseClient.js
+│   ├── .env                 # ← you create this (never commit)
+│   └── package.json
+└── README.md
+```
+
+---
 
 ---
 
