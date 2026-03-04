@@ -59,10 +59,36 @@ class ExecuteCalendarEventsIn(BaseModel):
     events: list[CalendarEventIn]
 
 
+class AuthUserIn(BaseModel):
+    """Payload sent by the frontend immediately after a successful Google OAuth login."""
+    user_id: str   # Supabase auth UUID
+    email:   str   # Google email — Supabase also stores this in auth.users automatically
+
+
 # ── Endpoints ─────────────────────────────────────────────────
 @app.get("/")
 async def root():
     return {"status": "Morning Agent Running"}
+
+
+@app.post("/upsert-auth-user")
+async def upsert_auth_user(body: AuthUserIn):
+    """
+    Called right after Google OAuth completes.
+    - Ensures a row in user_profile exists for this Supabase auth UUID.
+    - The email is already persisted by Supabase in auth.users automatically;
+      we echo it back for the frontend to confirm.
+    """
+    try:
+        supabase.table("user_profile").upsert(
+            {"id": body.user_id},
+            on_conflict="id",
+        ).execute()
+        logger.info(f"POST /upsert-auth-user user_id={body.user_id} email={body.email}")
+        return {"user_id": body.user_id, "email": body.email, "status": "ok"}
+    except Exception as e:
+        logger.exception("Error upserting auth user")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/models")

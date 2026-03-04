@@ -23,6 +23,9 @@ import BoltIcon from "@mui/icons-material/Bolt";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import TuneIcon from "@mui/icons-material/Tune";
+import LogoutIcon from "@mui/icons-material/Logout";
+import { supabase } from "./supabaseClient";
+import LoginScreen from "./LoginScreen";
 
 const BASE = "http://localhost:8000";
 
@@ -204,23 +207,7 @@ function CursorSpotlight() {
   );
 }
 
-function generateUUID() {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-function getUserId() {
-  let uid = localStorage.getItem("user_id");
-  if (!uid) {
-    uid = generateUUID();
-    localStorage.setItem("user_id", uid);
-  }
-  return uid;
-}
+// Auth user id is sourced from Supabase session (user.id)
 
 // ─── PlanCard ─────────────────────────────────────────────────────────────────
 const CARD_META = {
@@ -290,24 +277,50 @@ export default function App() {
   const [memoryContent, setMemoryContent] = useState("");
   const [memorySaving, setMemorySaving] = useState(false);
   const [memoryMessage, setMemoryMessage] = useState(null);
+  const [user, setUser]               = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  // On first load: ensure user_id exists (generate once, reuse everywhere)
+  // ── Auth: restore session + subscribe to changes ──────────────────────────
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        const u = session?.user ?? null;
+        setUser(u);
+        if (!u) {
+          setPlan(null); setSavedProfile(null);
+          setRecentPlans([]); setPipelineStep(0);
+        }
+      }
+    );
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // ── Bootstrap data once a user is known ───────────────────────────────────
+  useEffect(() => {
+    if (!user) return;
     let cancelled = false;
-    const userId = getUserId();
-    console.log("Using user_id:", userId);
     (async () => {
       try {
-        const profile = await fetchProfile(userId);
+        // Register user in backend — creates user_profile row; email lives in auth.users
+        await fetch(`${BASE}/upsert-auth-user`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: user.id, email: user.email }),
+        });
+        const profile = await fetchProfile(user.id);
         if (cancelled) return;
         if (profile) {
-          fetchPlan(userId);
-          fetchRecentPlans(userId);
+          fetchPlan(user.id);
+          fetchRecentPlans(user.id);
         }
       } catch (_) {}
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchProfile = async (uid) => {
     try {
@@ -350,8 +363,7 @@ export default function App() {
       setError("Please fill in all profile fields.");
       return;
     }
-    const userId = getUserId();
-    console.log("Using user_id:", userId);
+    const userId = user.id;
     setSaving(true);
     setError(null);
     setPlan(null);
@@ -414,7 +426,7 @@ export default function App() {
   };
 
   const handleRegenerate = async () => {
-    const uid = getUserId();
+    const uid = user.id;
     await fetchPlan(uid);
     await fetchRecentPlans(uid);
   };
@@ -422,8 +434,7 @@ export default function App() {
   const handleSaveMemory = async () => {
     const content = memoryContent.trim();
     if (!content) return;
-    const uid = getUserId();
-    console.log("Using user_id:", uid);
+    const uid = user.id;
     setMemorySaving(true);
     setMemoryMessage(null);
     try {
@@ -442,6 +453,10 @@ export default function App() {
     }
   };
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
   const agentLogs = plan ? [
     { agent: "ScheduleAgent",   message: plan.agent_logs?.schedule   ?? "—" },
     { agent: "LogisticsAgent",  message: plan.agent_logs?.logistics   ?? "—" },
@@ -452,6 +467,18 @@ export default function App() {
   const pipelineSteps = ["User Profile", "Agents Running", "Supervisor", "Execution"];
   const confPct     = plan ? Math.round(plan.confidence * 100) : 0;
   const isHighConf  = plan && plan.confidence >= 0.7;
+
+  // ── Auth gates ────────────────────────────────────────────────────────────
+  if (authLoading) return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Box sx={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg }}>
+        <CircularProgress size={22} thickness={2} sx={{ color: C.neon }} />
+      </Box>
+    </ThemeProvider>
+  );
+
+  if (!user) return <LoginScreen />;
 
   return (
     <ThemeProvider theme={theme}>
@@ -491,6 +518,35 @@ export default function App() {
             {/* ── Header ── */}
             <motion.div variants={fadeUp}>
               <Box sx={{ textAlign: "center", mb: 4, position: "relative" }}>
+
+                {/* ── User info + logout ── */}
+                <Box sx={{ position: "absolute", top: 0, left: 0, display: "flex", alignItems: "center", gap: 0.75 }}>
+                  <Box sx={{
+                    width: 22, height: 22, borderRadius: "4px",
+                    background: C.neon, color: "#000",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontFamily: C.fontUI, fontWeight: 800, fontSize: "0.6rem", flexShrink: 0,
+                  }}>
+                    {user.email?.[0]?.toUpperCase() ?? "U"}
+                  </Box>
+                  <Typography variant="caption" sx={{
+                    color: C.textMuted, fontFamily: C.fontMono, fontSize: "0.6rem",
+                    maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>
+                    {user.email}
+                  </Typography>
+                  <Tooltip title="Sign out" arrow>
+                    <Box component="button" onClick={handleLogout} sx={{
+                      background: "none", border: "none", cursor: "pointer", p: "2px",
+                      color: C.textMuted, display: "flex", alignItems: "center",
+                      "&:hover": { color: C.neon }, transition: "color 0.2s",
+                      borderRadius: "3px",
+                    }}>
+                      <LogoutIcon sx={{ fontSize: 13 }} />
+                    </Box>
+                  </Tooltip>
+                </Box>
+
                 <Tooltip title="Agents Online" arrow>
                   <Box sx={{
                     position: "absolute", top: 0, right: 0,
