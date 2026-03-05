@@ -6,7 +6,7 @@ import {
   Button, Chip, Stepper, Step, StepLabel,
   LinearProgress, CircularProgress, Alert,
   Accordion, AccordionSummary, AccordionDetails,
-  Divider, Tooltip,
+  Divider, Tooltip, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
@@ -24,10 +24,13 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import TuneIcon from "@mui/icons-material/Tune";
 import LogoutIcon from "@mui/icons-material/Logout";
+import EventNoteIcon from "@mui/icons-material/EventNote";
+import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
+import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
 import { supabase } from "./supabaseClient";
 import LoginScreen from "./LoginScreen";
 
-const BASE = "http://localhost:8000";
+const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 // ─── Design tokens ───────────────────────────────────────────────────────────
 const C = {
@@ -169,8 +172,9 @@ const scaleIn = {
   visible: { opacity: 1, scale: 1, transition: { duration: 0.35, ease: "easeOut" } },
 };
 
-// Animated MUI Button
-const MotionButton = motion(Button);
+// Use motion.create() to avoid deprecation warning (motion() is deprecated in newer Framer Motion)
+const MotionDiv    = typeof motion.create === "function" ? motion.create("div") : motion.div;
+const MotionButton = typeof motion.create === "function" ? motion.create(Button) : motion(Button);
 const btnSpring    = { type: "spring", stiffness: 420, damping: 18 };
 
 // ─── Cursor spotlight ────────────────────────────────────────────────────────
@@ -187,7 +191,7 @@ function CursorSpotlight() {
   }, [rawX, rawY]);
 
   return (
-    <motion.div
+    <MotionDiv
       style={{
         position: "fixed",
         top: 0, left: 0,
@@ -220,9 +224,9 @@ function PlanCard({ label, value, agent, model }) {
   const meta = CARD_META[label] || {};
   const bullets = value.split(".").map(s => s.trim()).filter(Boolean).slice(0, 3);
   return (
-    <motion.div variants={fadeUp}>
+    <MotionDiv variants={fadeUp}>
       <Card>
-        <CardContent sx={{ p: 3 }}>
+        <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2.5 }}>
             <Box sx={{
               display: "flex", alignItems: "center", justifyContent: "center",
@@ -248,7 +252,7 @@ function PlanCard({ label, value, agent, model }) {
           </Typography>
         </CardContent>
       </Card>
-    </motion.div>
+    </MotionDiv>
   );
 }
 
@@ -279,48 +283,92 @@ export default function App() {
   const [memoryMessage, setMemoryMessage] = useState(null);
   const [user, setUser]               = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetDeleting, setResetDeleting] = useState(false);
+  const [calendarConnecting, setCalendarConnecting] = useState(false);
+  const [calendarMessage, setCalendarMessage] = useState(null); // "success" | "error" message text
 
-  // ── Auth: restore session + subscribe to changes ──────────────────────────
+  // ── Auth: centralized authentication state management ──────────────
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      setAuthLoading(false);
-    });
+    let mounted = true;
+
+    // Initialize auth state once on mount
+    const initAuth = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        
+        if (mounted) {
+          setUser(session?.user || null);
+          setAuthLoading(false);
+        }
+      } catch (error) {
+        console.error("Auth initialization error:", error);
+        if (mounted) {
+          setUser(null);
+          setAuthLoading(false);
+        }
+      }
+    };
+
+    initAuth();
+
+    // Listen for auth changes (login, logout, token refresh)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        const u = session?.user ?? null;
-        setUser(u);
-        if (!u) {
-          setPlan(null); setSavedProfile(null);
-          setRecentPlans([]); setPipelineStep(0);
+        if (!mounted) return;
+
+        if (!session?.user) {
+          // User logged out
+          setUser(null);
+          setPlan(null);
+          setSavedProfile(null);
+          setRecentPlans([]);
+          setPipelineStep(0);
+          setError(null);
+        } else {
+          // User logged in or session refreshed
+          setUser(session.user);
         }
       }
     );
-    return () => subscription.unsubscribe();
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  // ── Bootstrap data once a user is known ───────────────────────────────────
+  // ── Bootstrap: sync user_profile with id + email from Supabase Auth ────────
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
     let cancelled = false;
     (async () => {
       try {
-        // Register user in backend — creates user_profile row; email lives in auth.users
-        await fetch(`${BASE}/upsert-auth-user`, {
+        const emailFromAuth = (user.email != null && user.email !== "") ? String(user.email) : "";
+        const payload = { user_id: user.id, email: emailFromAuth };
+        if (!emailFromAuth) console.warn("[auth] No email on user object — ensure Google provider returns email in Supabase Auth");
+        const res = await fetch(`${BASE}/upsert-auth-user`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_id: user.id, email: user.email }),
+          body: JSON.stringify(payload),
         });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          console.warn("upsert-auth-user failed", res.status, err);
+        }
         const profile = await fetchProfile(user.id);
         if (cancelled) return;
         if (profile) {
-          fetchPlan(user.id);
+          // Do not run agents on login. Only fetch recent plan history (no agent run).
           fetchRecentPlans(user.id);
         }
-      } catch (_) {}
+      } catch (e) {
+        console.warn("Bootstrap error", e);
+      }
     })();
     return () => { cancelled = true; };
-  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [user?.id]); // Only depend on user.id to prevent infinite loops
 
   const fetchProfile = async (uid) => {
     try {
@@ -363,6 +411,13 @@ export default function App() {
       setError("Please fill in all profile fields.");
       return;
     }
+    
+    // Guard: prevent multiple simultaneous saves
+    if (saving) {
+      console.warn("[handleSaveAndGenerate] Already saving, skipping duplicate request");
+      return;
+    }
+    
     const userId = user.id;
     setSaving(true);
     setError(null);
@@ -380,6 +435,7 @@ export default function App() {
           commute_mode: form.commute_mode,
           wake_time:    form.wake_time,
           focus_goal:   form.focus_goal,
+          email:        user?.email ?? "",
         }),
       });
       if (!userRes.ok) throw new Error("Failed to create user profile.");
@@ -410,22 +466,52 @@ export default function App() {
 
   const fetchPlan = async (uid) => {
     console.log("Using user_id:", uid);
+    
+    // Guard: prevent multiple simultaneous requests
+    if (loading) {
+      console.warn("[fetchPlan] Already loading, skipping duplicate request");
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     setLogsOpen(false);
+    
+    // Timeout protection: abort after 60 seconds
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      console.error("[fetchPlan] Request timed out after 60s");
+    }, 60000);
+    
     try {
-      const res = await fetch(`${BASE}/morning-plan?user_id=${uid}`);
+      const res = await fetch(`${BASE}/morning-plan?user_id=${uid}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      
       if (!res.ok) throw new Error("Failed to fetch morning plan.");
       const data = await res.json();
       setPlan(data);
     } catch (err) {
-      setError(err.message);
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        setError("Request timed out. The AI agents may be taking too long. Please try again.");
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const handleRegenerate = async () => {
+    // Guard: prevent regenerate while already loading
+    if (loading) {
+      console.warn("[handleRegenerate] Already loading, skipping");
+      return;
+    }
+    
     const uid = user.id;
     await fetchPlan(uid);
     await fetchRecentPlans(uid);
@@ -454,7 +540,121 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    try {
+      // Sign out from Supabase
+      await supabase.auth.signOut();
+      // Clear all local storage
+      localStorage.clear();
+      // Reset all state
+      setUser(null);
+      setPlan(null);
+      setSavedProfile(null);
+      setRecentPlans([]);
+      setPipelineStep(0);
+      setError(null);
+      // Auth listener will handle redirect to login screen
+    } catch (error) {
+      console.error("Logout failed:", error);
+      setError("Failed to sign out. Please try again.");
+    }
+  };
+
+  // Load Google Identity Services script once for Calendar OAuth
+  const loadGsiScript = () => {
+    if (window.google?.accounts?.oauth2) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const id = "gsi-oauth-script";
+      if (document.getElementById(id)) {
+        if (window.google?.accounts?.oauth2) resolve();
+        else window.addEventListener("load", () => (window.google?.accounts?.oauth2 ? resolve() : reject(new Error("GIS not available"))));
+        return;
+      }
+      const script = document.createElement("script");
+      script.id = id;
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load Google Identity Services"));
+      document.head.appendChild(script);
+    });
+  };
+
+  const handleConnectCalendar = async () => {
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId?.trim()) {
+      setCalendarMessage("Failed to connect Google Calendar. (Google Client ID not configured.)");
+      return;
+    }
+    if (!user?.id) {
+      setCalendarMessage("Failed to connect Google Calendar. (Not signed in.)");
+      return;
+    }
+    setCalendarConnecting(true);
+    setCalendarMessage(null);
+    try {
+      await loadGsiScript();
+      const tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: clientId.trim(),
+        scope: "https://www.googleapis.com/auth/calendar.events",
+        callback: async (tokenResponse) => {
+          if (!tokenResponse?.access_token) {
+            setCalendarMessage("Failed to connect Google Calendar.");
+            setCalendarConnecting(false);
+            return;
+          }
+          try {
+            const res = await fetch(`${BASE}/api/store-google-token`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                user_id: user.id,
+                access_token: tokenResponse.access_token,
+              }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              setCalendarMessage(data.detail || "Failed to connect Google Calendar.");
+              return;
+            }
+            setCalendarMessage("Google Calendar connected successfully.");
+            await fetchProfile(user.id);
+          } catch (e) {
+            setCalendarMessage("Failed to connect Google Calendar.");
+          } finally {
+            setCalendarConnecting(false);
+          }
+        },
+      });
+      tokenClient.requestAccessToken();
+      // If popup is closed without granting, we never get callback; reset loading after a timeout
+      setTimeout(() => setCalendarConnecting((prev) => (prev ? false : prev)), 60000);
+    } catch (e) {
+      setCalendarMessage(e?.message || "Failed to connect Google Calendar.");
+      setCalendarConnecting(false);
+    }
+  };
+
+  // ── Auth gates ────────────────────────────────────────────────────────────
+
+  const handleResetDataConfirm = async () => {
+    if (!user?.id) return;
+    setResetDeleting(true);
+    setError(null);
+    try {
+      // Backend expects user_id as query param (DELETE /api/delete-user-data?user_id=...)
+      const url = `${BASE}/api/delete-user-data?user_id=${encodeURIComponent(user.id)}`;
+      const res = await fetch(url, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to delete user data");
+      setResetDialogOpen(false);
+      localStorage.clear();
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Delete user data failed:", err);
+      setError(err.message || "Failed to reset data");
+    } finally {
+      setResetDeleting(false);
+    }
   };
 
   const agentLogs = plan ? [
@@ -512,37 +712,41 @@ export default function App() {
       }} />
 
       <Box sx={{ minHeight: "100vh", position: "relative", zIndex: 1, px: { xs: 2, sm: 4 }, py: 6 }}>
-        <Box sx={{ maxWidth: 560, mx: "auto" }}>
-          <motion.div initial="hidden" animate="visible" variants={stagger}>
+        <Box sx={{ maxWidth: 560, mx: "auto", px: { xs: 2, sm: 3 }, boxSizing: "border-box" }}>
+          <MotionDiv initial="hidden" animate="visible" variants={stagger}>
 
             {/* ── Header ── */}
-            <motion.div variants={fadeUp}>
+            <MotionDiv variants={fadeUp}>
               <Box sx={{ textAlign: "center", mb: 4, position: "relative" }}>
 
                 {/* ── User info + logout ── */}
-                <Box sx={{ position: "absolute", top: 0, left: 0, display: "flex", alignItems: "center", gap: 0.75 }}>
+                <Box sx={{
+                  position: "absolute", top: 0, left: 0,
+                  display: "flex", alignItems: "center", gap: { xs: 0.75, sm: 1.25 },
+                  flexWrap: "wrap", maxWidth: "min(100%, 280px)",
+                }}>
                   <Box sx={{
-                    width: 22, height: 22, borderRadius: "4px",
+                    width: 32, height: 32, borderRadius: "6px",
                     background: C.neon, color: "#000",
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    fontFamily: C.fontUI, fontWeight: 800, fontSize: "0.6rem", flexShrink: 0,
+                    fontFamily: C.fontUI, fontWeight: 800, fontSize: "0.9rem", flexShrink: 0,
                   }}>
                     {user.email?.[0]?.toUpperCase() ?? "U"}
                   </Box>
-                  <Typography variant="caption" sx={{
-                    color: C.textMuted, fontFamily: C.fontMono, fontSize: "0.6rem",
-                    maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  <Typography variant="body2" sx={{
+                    color: C.textSec, fontFamily: C.fontUI, fontSize: { xs: "0.8rem", sm: "0.9rem" }, fontWeight: 500,
+                    maxWidth: { xs: 120, sm: 200 }, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   }}>
                     {user.email}
                   </Typography>
                   <Tooltip title="Sign out" arrow>
                     <Box component="button" onClick={handleLogout} sx={{
-                      background: "none", border: "none", cursor: "pointer", p: "2px",
-                      color: C.textMuted, display: "flex", alignItems: "center",
+                      background: "none", border: "none", cursor: "pointer", p: 0.75,
+                      color: C.textMuted, display: "flex", alignItems: "center", justifyContent: "center",
                       "&:hover": { color: C.neon }, transition: "color 0.2s",
-                      borderRadius: "3px",
+                      borderRadius: "6px", minWidth: 36, minHeight: 36, ml: -0.5,
                     }}>
-                      <LogoutIcon sx={{ fontSize: 13 }} />
+                      <LogoutIcon sx={{ fontSize: 22 }} />
                     </Box>
                   </Tooltip>
                 </Box>
@@ -586,10 +790,10 @@ export default function App() {
                   Autonomous Multi-Agent System
                 </Typography>
               </Box>
-            </motion.div>
+            </MotionDiv>
 
             {/* ── Agent Chips ── */}
-            <motion.div variants={fadeUp}>
+            <MotionDiv variants={fadeUp}>
               <Box sx={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: 1, mb: 3 }}>
                 {[
                   { label: "Supervisor", icon: <AccountTreeIcon sx={{ fontSize: 12 }} /> },
@@ -608,13 +812,14 @@ export default function App() {
                   />
                 ))}
               </Box>
-            </motion.div>
+            </MotionDiv>
 
             {/* ── Pipeline Stepper ── */}
-            <motion.div variants={fadeUp}>
-              <Box sx={{ mb: 3 }}>
+            <MotionDiv variants={fadeUp}>
+              <Box sx={{ mb: 3, overflowX: "auto", pb: 0.5 }}>
                 <Stepper activeStep={pipelineStep - 1} alternativeLabel
                   sx={{
+                    minWidth: { xs: 320, sm: "auto" },
                     "& .MuiStepConnector-line": { borderColor: C.border },
                     "& .MuiStepIcon-root":               { color: "#1A1A1A" },
                     "& .MuiStepIcon-root.Mui-active":    { color: C.neon, filter: `drop-shadow(0 0 4px ${C.neon})` },
@@ -630,19 +835,19 @@ export default function App() {
                   ))}
                 </Stepper>
               </Box>
-            </motion.div>
+            </MotionDiv>
 
             {/* ── Profile Form ── */}
-            <motion.div variants={fadeUp}>
+            <MotionDiv variants={fadeUp}>
               <Card sx={{ mb: 2.5 }}>
-                <CardContent sx={{ p: 3 }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2.5, pb: 2, borderBottom: `1px solid ${C.border}` }}>
                     <PsychologyIcon sx={{ color: C.neon, fontSize: 16 }} />
                     <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
                       Your Profile
                     </Typography>
                   </Box>
-                  <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, mb: 2 }}>
+                  <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 2, mb: 2 }}>
                     {[
                       { label: "Diet",         name: "diet",         placeholder: "e.g. Vegan" },
                       { label: "Commute Mode", name: "commute_mode", placeholder: "e.g. Bus" },
@@ -674,12 +879,12 @@ export default function App() {
                   </MotionButton>
                 </CardContent>
               </Card>
-            </motion.div>
+            </MotionDiv>
 
             {/* ── Personal Memory ── */}
-            <motion.div variants={fadeUp}>
+            <MotionDiv variants={fadeUp}>
               <Card sx={{ mb: 2.5 }}>
-                <CardContent sx={{ p: 3 }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2, pb: 2, borderBottom: `1px solid ${C.border}` }}>
                     <MemoryIcon sx={{ color: C.neon, fontSize: 16 }} />
                     <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
@@ -705,28 +910,172 @@ export default function App() {
                     </MotionButton>
                     <AnimatePresence>
                       {memoryMessage && (
-                        <motion.div initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
+                        <MotionDiv initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
                           <Typography variant="caption" sx={{ color: memoryMessage === "Memory saved" ? C.neon : C.error, fontWeight: 600, fontFamily: C.fontMono, fontSize: "0.72rem" }}>
                             {memoryMessage}
                           </Typography>
-                        </motion.div>
+                        </MotionDiv>
                       )}
                     </AnimatePresence>
                   </Box>
                 </CardContent>
               </Card>
-            </motion.div>
+            </MotionDiv>
+
+            {/* ── Google Calendar ── */}
+            <MotionDiv variants={fadeUp}>
+              <Card sx={{ mb: 2.5, borderColor: C.border }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2, pb: 2, borderBottom: `1px solid ${C.border}` }}>
+                    <CalendarMonthIcon sx={{ color: C.textMuted, fontSize: 18 }} />
+                    <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
+                      Google Calendar
+                    </Typography>
+                  </Box>
+                  {savedProfile?.calendar_connected ? (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                      <CheckCircleIcon sx={{ color: C.neon, fontSize: 22 }} />
+                      <Typography variant="body2" sx={{ color: C.neon, fontWeight: 600, fontSize: "0.9rem" }}>
+                        Google Calendar Connected
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <>
+                      <Typography variant="body2" sx={{ color: C.textSec, mb: 2, fontSize: "0.85rem" }}>
+                        Connect your Google account so approved daily plans can be added to your calendar.
+                      </Typography>
+                      <Button
+                        variant="outlined"
+                        onClick={handleConnectCalendar}
+                        disabled={calendarConnecting}
+                        startIcon={calendarConnecting ? <CircularProgress size={16} color="inherit" /> : <CalendarMonthIcon sx={{ fontSize: 18 }} />}
+                        sx={{
+                          borderColor: C.border,
+                          color: C.textSec,
+                          textTransform: "none",
+                          fontWeight: 600,
+                          fontSize: "0.875rem",
+                          "&:hover": { borderColor: C.neon, color: C.neon },
+                        }}
+                      >
+                        {calendarConnecting ? "Connecting…" : "Connect Google Calendar"}
+                      </Button>
+                      <AnimatePresence>
+                        {calendarMessage && (
+                          <MotionDiv initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} sx={{ mt: 2 }}>
+                            <Typography
+                              variant="body2"
+                              sx={{
+                                color: calendarMessage.includes("successfully") ? C.neon : C.error,
+                                fontWeight: 500,
+                                fontSize: "0.85rem",
+                              }}
+                            >
+                              {calendarMessage}
+                            </Typography>
+                          </MotionDiv>
+                        )}
+                      </AnimatePresence>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </MotionDiv>
+
+            {/* ── Account: Reset My Data ── */}
+            <MotionDiv variants={fadeUp}>
+              <Card sx={{ mb: 2.5, borderColor: C.border }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2, pb: 2, borderBottom: `1px solid ${C.border}` }}>
+                    <DeleteForeverIcon sx={{ color: C.textMuted, fontSize: 18 }} />
+                    <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
+                      Account
+                    </Typography>
+                  </Box>
+                  <Typography variant="body2" sx={{ color: C.textSec, mb: 2, fontSize: "0.85rem" }}>
+                    Permanently delete your profile, plans, and memories. You will be signed out.
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    onClick={() => setResetDialogOpen(true)}
+                    disabled={resetDeleting}
+                    startIcon={resetDeleting ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : <DeleteForeverIcon sx={{ fontSize: 18 }} />}
+                    sx={{
+                      bgcolor: "#d32f2f",
+                      color: "#fff",
+                      px: 2,
+                      py: 1.25,
+                      borderRadius: "6px",
+                      textTransform: "none",
+                      fontWeight: 600,
+                      fontSize: "0.875rem",
+                      "&:hover": { bgcolor: "#b71c1c" },
+                    }}
+                  >
+                    {resetDeleting ? "Deleting…" : "Reset My Data"}
+                  </Button>
+                </CardContent>
+              </Card>
+            </MotionDiv>
+
+            {/* ── Reset data confirmation dialog ── */}
+            <Dialog
+              open={resetDialogOpen}
+              onClose={() => !resetDeleting && setResetDialogOpen(false)}
+              disableScrollLock
+              disableEnforceFocus={false}
+              PaperProps={{
+                sx: {
+                  bgcolor: C.surface,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 2,
+                },
+              }}
+              slotProps={{ root: { "aria-hidden": false } }}
+            >
+              <DialogTitle sx={{ color: C.textPri, fontFamily: C.fontDisplay, fontWeight: 700 }}>
+                Reset My Data
+              </DialogTitle>
+              <DialogContent>
+                <DialogContentText sx={{ color: C.textSec, fontSize: "0.9rem" }}>
+                  Are you sure you want to delete all your data? This action cannot be undone.
+                </DialogContentText>
+              </DialogContent>
+              <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+                <Button
+                  onClick={() => setResetDialogOpen(false)}
+                  disabled={resetDeleting}
+                  sx={{ color: C.textSec, textTransform: "none" }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleResetDataConfirm}
+                  disabled={resetDeleting}
+                  sx={{
+                    bgcolor: "#d32f2f",
+                    color: "#fff",
+                    textTransform: "none",
+                    fontWeight: 600,
+                    "&:hover": { bgcolor: "#b71c1c" },
+                  }}
+                >
+                  {resetDeleting ? "Deleting…" : "Delete My Data"}
+                </Button>
+              </DialogActions>
+            </Dialog>
 
             {/* ── Loaded From Memory ── */}
             <AnimatePresence>
               {savedProfile && showMemory && (
-                <motion.div key="mem" variants={scaleIn} initial="hidden" animate="visible" exit={{ opacity: 0, scale: 0.95 }}>
+                <MotionDiv key="mem" variants={scaleIn} initial="hidden" animate="visible" exit={{ opacity: 0, scale: 0.95 }}>
                   <Card sx={{ mb: 2.5, borderColor: C.borderHi }}>
-                    <CardContent sx={{ p: 3 }}>
+                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
                       <Typography variant="caption" sx={{ color: C.neon, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
                         ▸ Loaded From Memory
                       </Typography>
-                      <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, mt: 2 }}>
+                      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 2, mt: 2 }}>
                         {[
                           { label: "Diet",         val: savedProfile.diet },
                           { label: "Commute Mode", val: savedProfile.commute_mode },
@@ -741,11 +1090,11 @@ export default function App() {
                       </Box>
                     </CardContent>
                   </Card>
-                </motion.div>
+                </MotionDiv>
               )}
             </AnimatePresence>
             {savedProfile && !showMemory && (
-              <motion.div variants={fadeUp}>
+              <MotionDiv variants={fadeUp}>
                 <Box sx={{ textAlign: "center", mb: 2 }}>
                   <MotionButton size="small" variant="text" onClick={() => setShowMemory(true)}
                     sx={{ color: C.textMuted, "&:hover": { color: C.neon } }}
@@ -756,43 +1105,43 @@ export default function App() {
                     Show Loaded Profile
                   </MotionButton>
                 </Box>
-              </motion.div>
+              </MotionDiv>
             )}
 
             {/* ── Error ── */}
             <AnimatePresence>
               {error && (
-                <motion.div key="err" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                <MotionDiv key="err" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
                   <Alert severity="error" sx={{ mb: 2.5, borderRadius: 3 }}>{error}</Alert>
-                </motion.div>
+                </MotionDiv>
               )}
             </AnimatePresence>
 
             {/* ── Loading ── */}
             <AnimatePresence>
               {loading && (
-                <motion.div key="load" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <MotionDiv key="load" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                   <Box sx={{ textAlign: "center", py: 6 }}>
                     <CircularProgress size={32} sx={{ color: C.neon, mb: 2 }} thickness={2} />
                     <Typography variant="body2" sx={{ color: C.textMuted, letterSpacing: "0.1em", fontFamily: C.fontMono, fontSize: "0.75rem" }}>
                       AGENTS PROCESSING…
                     </Typography>
                   </Box>
-                </motion.div>
+                </MotionDiv>
               )}
             </AnimatePresence>
 
             {/* ── Plan ── */}
             <AnimatePresence>
               {plan && !loading && (
-                <motion.div key="plan" initial="hidden" animate="visible" variants={stagger}>
+                <MotionDiv key="plan" initial="hidden" animate="visible" variants={stagger}>
 
                   {plan.needs_human && (
-                    <motion.div variants={fadeUp}>
+                    <MotionDiv variants={fadeUp}>
                       <Alert severity="warning" sx={{ mb: 2.5, borderRadius: 3 }}>
                         Supervisor requests human confirmation
                       </Alert>
-                    </motion.div>
+                    </MotionDiv>
                   )}
 
                   <PlanCard label="Meal"     value={plan.meal}     agent="PreferenceAgent" model={plan.models?.preference} />
@@ -802,10 +1151,92 @@ export default function App() {
                   <PlanCard label="Priority" value={plan.priority} agent="ScheduleAgent"   model={plan.models?.schedule} />
                   <Box sx={{ mb: 2 }} />
 
-                  {/* Confidence */}
-                  <motion.div variants={fadeUp}>
+                  {/* Daily Life Plan — full-day timeline */}
+                  <MotionDiv variants={fadeUp}>
                     <Card sx={{ mb: 2.5 }}>
-                      <CardContent sx={{ p: 3 }}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2, pb: 2, borderBottom: `1px solid ${C.border}` }}>
+                          <EventNoteIcon sx={{ color: C.neon, fontSize: 18 }} />
+                          <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
+                            Daily Life Plan
+                          </Typography>
+                        </Box>
+                        {plan.daily_plan && plan.daily_plan.length > 0 ? (
+                          <Box
+                            sx={{
+                              position: "relative",
+                              pl: 2,
+                              "&::before": {
+                                content: '""',
+                                position: "absolute",
+                                left: 5,
+                                top: 8,
+                                bottom: 8,
+                                width: 2,
+                                background: `linear-gradient(to bottom, ${C.neon}40, ${C.border})`,
+                                borderRadius: 1,
+                              },
+                            }}
+                          >
+                            {plan.daily_plan.map((item, idx) => (
+                              <Box
+                                key={idx}
+                                sx={{
+                                  position: "relative",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 2,
+                                  py: 1,
+                                  pl: 2.5,
+                                  borderBottom: idx < plan.daily_plan.length - 1 ? `1px solid ${C.border}` : "none",
+                                }}
+                              >
+                                <Box
+                                  sx={{
+                                    position: "absolute",
+                                    left: 4,
+                                    top: "50%",
+                                    transform: "translateY(-50%)",
+                                    width: 10,
+                                    height: 10,
+                                    borderRadius: "50%",
+                                    bgcolor: C.neon,
+                                    boxShadow: `0 0 8px ${C.neonGlow}`,
+                                    flexShrink: 0,
+                                  }}
+                                />
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    minWidth: 88,
+                                    fontFamily: C.fontMono,
+                                    color: C.neon,
+                                    fontWeight: 600,
+                                    fontSize: "0.85rem",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {item.time}
+                                </Typography>
+                                <Typography variant="body2" sx={{ color: C.textPri, fontSize: "0.875rem", lineHeight: 1.5 }}>
+                                  {item.activity}
+                                </Typography>
+                              </Box>
+                            ))}
+                          </Box>
+                        ) : (
+                          <Typography variant="body2" sx={{ color: C.textMuted, fontStyle: "italic", fontSize: "0.85rem" }}>
+                            No daily plan generated yet. Save profile and generate to see your full-day timeline.
+                          </Typography>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </MotionDiv>
+
+                  {/* Confidence */}
+                  <MotionDiv variants={fadeUp}>
+                    <Card sx={{ mb: 2.5 }}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
                         <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
                           <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
                             Confidence Score
@@ -835,13 +1266,13 @@ export default function App() {
                         </Box>
                       </CardContent>
                     </Card>
-                  </motion.div>
+                  </MotionDiv>
 
                   {/* Execution Status */}
                   {plan.execution && (
-                    <motion.div variants={fadeUp}>
+                    <MotionDiv variants={fadeUp}>
                       <Card sx={{ mb: 2.5 }}>
-                        <CardContent sx={{ p: 3 }}>
+                        <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
                           <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
                             <BoltIcon sx={{ color: C.neon, fontSize: 16 }} />
                             <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
@@ -865,14 +1296,29 @@ export default function App() {
                                 </Typography>
                               </Box>
                             )}
+                            {plan.execution.calendar && plan.execution.calendar.status === "success" && (
+                              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                <CheckCircleIcon sx={{ color: C.neon, fontSize: 15 }} />
+                                <Typography variant="body2" sx={{ color: C.textPri, fontSize: "0.85rem" }}>
+                                  {plan.execution.calendar.events_created} event{plan.execution.calendar.events_created !== 1 ? "s" : ""} added to Google Calendar
+                                </Typography>
+                              </Box>
+                            )}
+                            {plan.execution.calendar && plan.execution.calendar.status === "error" && (
+                              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                <Typography variant="body2" sx={{ color: C.error, fontSize: "0.85rem" }}>
+                                  Calendar: {plan.execution.calendar.message || "Failed to create events"}
+                                </Typography>
+                              </Box>
+                            )}
                           </Box>
                         </CardContent>
                       </Card>
-                    </motion.div>
+                    </MotionDiv>
                   )}
 
                   {/* Why this plan? */}
-                  <motion.div variants={fadeUp}>
+                  <MotionDiv variants={fadeUp}>
                     <Accordion
                       expanded={reasoningOpen} onChange={() => setReasoningOpen(p => !p)}
                       sx={{ mb: 2.5, borderRadius: "16px !important", overflow: "hidden" }}
@@ -911,10 +1357,10 @@ export default function App() {
                         </Box>
                       </AccordionDetails>
                     </Accordion>
-                  </motion.div>
+                  </MotionDiv>
 
                   {/* Action Buttons */}
-                  <motion.div variants={fadeUp}>
+                  <MotionDiv variants={fadeUp}>
                     <Box sx={{ display: "flex", gap: 2, mb: 1 }}>
                       <MotionButton fullWidth variant="contained" color="primary"
                         onClick={() => alert("Morning plan approved and executing")}
@@ -937,24 +1383,24 @@ export default function App() {
                         Regenerate
                       </MotionButton>
                     </Box>
-                  </motion.div>
+                  </MotionDiv>
 
-                </motion.div>
+                </MotionDiv>
               )}
             </AnimatePresence>
 
             {/* ── Recent Plans ── */}
             <AnimatePresence>
               {recentPlans.length > 0 && showRecent && (
-                <motion.div key="recent" initial="hidden" animate="visible" variants={stagger}>
-                  <motion.div variants={fadeUp}>
+                <MotionDiv key="recent" initial="hidden" animate="visible" variants={stagger}>
+                  <MotionDiv variants={fadeUp}>
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2, mt: 1 }}>
                       <HistoryIcon sx={{ fontSize: 15, color: C.textMuted }} />
                       <Typography variant="caption" sx={{ color: C.textMuted, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
                         Recent Plans
                       </Typography>
                     </Box>
-                  </motion.div>
+                  </MotionDiv>
                   {recentPlans.map((item) => {
                     const planData  = item.plan;
                     const timestamp = new Date(item.created_at).toLocaleString();
@@ -963,7 +1409,7 @@ export default function App() {
                       : "No summary available";
                     const isExp = expandedPlan === item.id;
                     return (
-                      <motion.div key={item.id} variants={fadeUp}>
+                      <MotionDiv key={item.id} variants={fadeUp}>
                         <Accordion expanded={isExp} onChange={() => setExpandedPlan(isExp ? null : item.id)}
                           sx={{ mb: 1.5, borderRadius: "14px !important", overflow: "hidden" }}
                         >
@@ -989,15 +1435,15 @@ export default function App() {
                             ))}
                           </AccordionDetails>
                         </Accordion>
-                      </motion.div>
+                      </MotionDiv>
                     );
                   })}
-                </motion.div>
+                </MotionDiv>
               )}
             </AnimatePresence>
 
             {recentPlans.length > 0 && !showRecent && (
-              <motion.div variants={fadeUp}>
+              <MotionDiv variants={fadeUp}>
                 <Box sx={{ textAlign: "center", mt: 1 }}>
                   <MotionButton size="small" variant="text"
                     startIcon={<HistoryIcon sx={{ fontSize: 14 }} />} onClick={() => setShowRecent(true)}
@@ -1009,10 +1455,10 @@ export default function App() {
                     Show Recent Plans
                   </MotionButton>
                 </Box>
-              </motion.div>
+              </MotionDiv>
             )}
 
-          </motion.div>
+          </MotionDiv>
         </Box>
       </Box>
     </ThemeProvider>

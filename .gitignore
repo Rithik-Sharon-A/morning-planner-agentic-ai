@@ -2,11 +2,15 @@
 .env
 .env.local
 .env.*.local
-*.env
-env
+backend/.env
+frontend/.env
+!backend/.env.example
+!frontend/.env.example
 
 # Python
 backend/venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -16,11 +20,13 @@ __pycache__/
 .eggs/
 dist/
 build/
+*.pyc
 
 # Node
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/dist-ssr/
 
 # IDE and OS
 .idea/
@@ -37,5 +43,21 @@ tmp/
 temp/
 *.tmp
 
-# Local data
+# Local data and test files
 users.txt
+*.db
+*.sqlite
+
+# Documentation builds
+docs/_build/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+
+# Agent transcripts (Cursor)
+agent-transcripts/

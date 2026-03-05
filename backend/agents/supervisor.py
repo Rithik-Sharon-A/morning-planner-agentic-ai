@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from dotenv import load_dotenv
 from .crewai_agents import MemoryContext, run_crew
 from .execution import execute_plan, execute_calendar_if_confident
@@ -10,21 +11,34 @@ logger = logging.getLogger(__name__)
 
 class SupervisorAgent:
     def get_decision(self, profile: dict = None, events: list = None, user_id: str = None):
+        start_time = time.time()
         try:
+            logger.info(f"[supervisor] Starting decision for user_id={user_id}")
             memory_context = self._build_memory_context(profile=profile, events=events, user_id=user_id)
             logger.info("[memory] MemoryContext personal_memory count=%s", len(memory_context.get("personal_memory") or []))
+            
+            crew_start = time.time()
             crew_result    = run_crew(memory_context, user_id=user_id)
+            crew_elapsed = time.time() - crew_start
+            logger.info(f"[timing] Crew execution took {crew_elapsed:.2f}s")
             schedule_out   = crew_result["schedule_out"]
             logistics_out  = crew_result["logistics_out"]
             preference_out = crew_result["preference_out"]
             reasoning      = crew_result["reasoning"]
+            daily_plan     = crew_result.get("daily_plan") or []
 
+            confidence = 0.75
+            threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.8"))
+            # Supervisor approval gate: if confidence > threshold, allow Execution Agent to run
             decision = {
                 "meal":       preference_out,
                 "route":      logistics_out,
                 "priority":   schedule_out,
-                "confidence": 0.75,
+                "confidence": confidence,
+                "confidence_score": confidence,  # alias for compatibility
                 "reasoning":  reasoning,
+                "daily_plan": daily_plan,
+                "events": None,  # Execution layer derives or uses this when present
                 "agent_logs": {
                     "schedule":   schedule_out,
                     "logistics":  logistics_out,
@@ -41,18 +55,34 @@ class SupervisorAgent:
                 {"route": logistics_out, "meal": preference_out},
                 user_id=user_id,
             )
-            threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
-            # Only trigger Tool Execution Agent (Google Calendar) when confidence >= threshold
-            calendar_result = execute_calendar_if_confident(
-                decision, profile=profile, user_id=user_id, threshold=threshold
-            )
-            if calendar_result is not None:
-                execution_result["calendar"] = calendar_result
+            
+            # Supervisor approval gate: only trigger Execution Agent when confidence >= threshold
+            # Guard: prevent duplicate execution
+            if confidence >= threshold and not decision.get("execution_done"):
+                # Auto-execute: create calendar events from daily_plan
+                if daily_plan and user_id:
+                    try:
+                        cal_start = time.time()
+                        from google_calendar_service import execute_daily_plan_to_calendar
+                        calendar_events = [{"title": item["activity"], "time": item["time"]} for item in daily_plan]
+                        calendar_result = execute_daily_plan_to_calendar(user_id, calendar_events)
+                        cal_elapsed = time.time() - cal_start
+                        execution_result["calendar"] = calendar_result
+                        decision["execution_done"] = True  # Mark as executed to prevent re-execution
+                        logger.info(f"[calendar] Auto-executed for user_id={user_id}, created={calendar_result.get('events_created', 0)}, took {cal_elapsed:.2f}s")
+                    except Exception as e:
+                        logger.exception(f"[calendar] Auto-execution failed: {e}")
+                        execution_result["calendar"] = {"status": "error", "message": str(e), "events_created": 0}
+            else:
+                decision["needs_human"] = True  # request user confirmation
+            
             decision["execution"] = execution_result
 
             if decision["confidence"] < threshold:
                 decision["needs_human"] = True
 
+            total_elapsed = time.time() - start_time
+            logger.info(f"[timing] Total supervisor decision took {total_elapsed:.2f}s")
             return decision
 
         except Exception as e:
@@ -80,7 +110,10 @@ class SupervisorAgent:
             "route":      "Unable to fetch route",
             "priority":   "Unable to fetch priorities",
             "confidence": 0.0,
+            "confidence_score": 0.0,
             "reasoning":  f"Agent failed to respond. Error: {error}",
+            "daily_plan": [],
+            "events": [],
             "agent_logs": {
                 "schedule":   "Agent unavailable",
                 "logistics":  "Agent unavailable",

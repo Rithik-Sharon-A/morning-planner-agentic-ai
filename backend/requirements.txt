@@ -8,7 +8,8 @@ litellm
 # LangChain Tool Execution Agent
 langchain>=0.3.0
 langchain-core>=0.3.0
-# Google Calendar API
+# Google Calendar API (calendar_service.py + tool_execution)
 google-api-python-client>=2.100.0
+google-auth>=2.0.0
 google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0

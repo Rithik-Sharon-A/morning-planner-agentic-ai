@@ -14,14 +14,18 @@ from db import supabase
 from agents.supervisor import SupervisorAgent
 from agents.tool_execution import run_tool_execution
 from memory.simple_memory import add_memory
+from google_calendar_service import execute_daily_plan_to_calendar
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 app = FastAPI()
 
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").strip().split(",")
+_cors_origins = [o.strip() for o in _cors_origins if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,6 +39,7 @@ class UserProfileIn(BaseModel):
     commute_mode: str
     wake_time: str
     focus_goal: str
+    email: str | None = None  # optional; when provided (e.g. from Google auth), stored in user_profile.email
 
 class EventIn(BaseModel):
     user_id: str
@@ -61,8 +66,26 @@ class ExecuteCalendarEventsIn(BaseModel):
 
 class AuthUserIn(BaseModel):
     """Payload sent by the frontend immediately after a successful Google OAuth login."""
-    user_id: str   # Supabase auth UUID
-    email:   str   # Google email — Supabase also stores this in auth.users automatically
+    user_id: str
+    email: str | None = None  # Google email; optional so null/omit never fails validation
+
+
+class DailyPlanEvent(BaseModel):
+    """Single event from daily plan timeline."""
+    title: str
+    time: str  # e.g. "7:00 AM" or "07:00"
+
+
+class ExecuteCalendarPlanIn(BaseModel):
+    """Request body for /api/execute-calendar-plan endpoint."""
+    user_id: str
+    events: list[DailyPlanEvent]
+
+
+class StoreGoogleTokenIn(BaseModel):
+    """Request body for POST /api/store-google-token. Frontend sends after user grants Calendar scope."""
+    user_id: str
+    access_token: str
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -71,21 +94,50 @@ async def root():
     return {"status": "Morning Agent Running"}
 
 
+@app.post("/api/store-google-token")
+async def store_google_token(body: StoreGoogleTokenIn):
+    """
+    Store the user's Google OAuth access_token in Supabase user_profile.
+    Frontend calls this after the user completes Google Calendar OAuth consent.
+    Security: only the authenticated user's token is stored (user_id from Supabase session).
+    """
+    try:
+        if not body.user_id or not body.user_id.strip():
+            raise HTTPException(status_code=400, detail="user_id is required")
+        if not body.access_token or not body.access_token.strip():
+            raise HTTPException(status_code=400, detail="access_token is required")
+
+        user_id = body.user_id.strip()
+        access_token = body.access_token.strip()
+
+        # Update access_token for the authenticated user only (do not overwrite other columns).
+        # Requires an existing user_profile row (created on login via upsert-auth-user).
+        supabase.table("user_profile").update({"access_token": access_token}).eq("id", user_id).execute()
+
+        logger.info(f"POST /api/store-google-token user_id={user_id} token stored")
+        return {"status": "ok", "message": "Google token stored"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("store_google_token failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/upsert-auth-user")
 async def upsert_auth_user(body: AuthUserIn):
     """
-    Called right after Google OAuth completes.
-    - Ensures a row in user_profile exists for this Supabase auth UUID.
-    - The email is already persisted by Supabase in auth.users automatically;
-      we echo it back for the frontend to confirm.
+    Called when the frontend has a Supabase Auth session (e.g. after Google login).
+    - Gets user_id and email from the request (email comes from Supabase Auth / session).
+    - Upserts into user_profile so the same email is stored in your Supabase DB table.
     """
     try:
-        supabase.table("user_profile").upsert(
-            {"id": body.user_id},
-            on_conflict="id",
-        ).execute()
-        logger.info(f"POST /upsert-auth-user user_id={body.user_id} email={body.email}")
-        return {"user_id": body.user_id, "email": body.email, "status": "ok"}
+        email = (body.email or "").strip()
+        row = {"id": body.user_id, "email": email}
+        supabase.table("user_profile").upsert(row, on_conflict="id").execute()
+        if email:
+            supabase.table("user_profile").update({"email": email}).eq("id", body.user_id).execute()
+        logger.info(f"POST /upsert-auth-user user_id={body.user_id} email={email}")
+        return {"user_id": body.user_id, "email": email, "status": "ok"}
     except Exception as e:
         logger.exception("Error upserting auth user")
         raise HTTPException(status_code=500, detail=str(e))
@@ -112,6 +164,9 @@ async def create_user(body: UserProfileIn):
         }
         if body.user_id:
             row["id"] = body.user_id
+        if body.email is not None and str(body.email).strip():
+            row["email"] = str(body.email).strip()
+        if body.user_id:
             res = supabase.table("user_profile").upsert(row, on_conflict="id").execute()
         else:
             res = supabase.table("user_profile").insert(row).execute()
@@ -155,7 +210,11 @@ async def get_profile(user_id: str = Query(...)):
         res = supabase.table("user_profile").select("*").eq("id", user_id).execute()
         if not res.data:
             return None  # 200 + null so frontend can clear stale user_id
-        return res.data[0]
+        row = dict(res.data[0])
+        # Do not expose access_token to frontend; expose only a boolean for UI state
+        access_token = row.pop("access_token", None)
+        row["calendar_connected"] = bool(access_token and str(access_token).strip())
+        return row
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -198,6 +257,86 @@ async def morning_plan(user_id: str = Query(default=None)):
         return decision
 
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/delete-user-data")
+async def delete_user_data(user_id: str = Query(..., description="Authenticated user's id")):
+    """
+    Delete all data for the given user_id (query param). Frontend sends user_id in URL.
+    Only the authenticated user should call this with their own user_id.
+    Tables: user_profile, daily_events, generated_plans, user_memories; optional: schedule_history, agent_memory, execution_logs.
+    """
+    if not user_id or not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    user_id = user_id.strip()
+    try:
+        # Dependent tables first (by user_id), then profile (by id)
+        supabase.table("daily_events").delete().eq("user_id", user_id).execute()
+        supabase.table("generated_plans").delete().eq("user_id", user_id).execute()
+        supabase.table("user_memories").delete().eq("user_id", user_id).execute()
+        try:
+            supabase.table("schedule_history").delete().eq("user_id", user_id).execute()
+        except Exception:
+            pass  # table may not exist
+        try:
+            supabase.table("agent_memory").delete().eq("user_id", user_id).execute()
+        except Exception:
+            pass  # table may not exist
+        try:
+            supabase.table("execution_logs").delete().eq("user_id", user_id).execute()
+        except Exception:
+            pass  # table may not exist
+        try:
+            supabase.table("oauth_tokens").delete().eq("id", user_id).execute()
+        except Exception:
+            pass  # table may not exist
+        supabase.table("user_profile").delete().eq("id", user_id).execute()
+        logger.info("DELETE /api/delete-user-data user_id=%s success", user_id)
+        return {"status": "success"}
+    except Exception as e:
+        logger.exception("delete_user_data failed for user_id=%s", user_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/execute-calendar-plan")
+async def execute_calendar_plan(body: ExecuteCalendarPlanIn):
+    """
+    Execute daily plan by creating events in user's Google Calendar.
+    
+    Flow: User Request → Planning Agents → Supervisor Agent → Confidence Check → 
+          Execution Agent → Google Calendar Tool → Events Created
+    
+    Only triggered when Supervisor confidence >= threshold (default 0.8).
+    Fetches user's Google OAuth token from Supabase (security: only authenticated user's token).
+    Creates events in primary calendar and logs to execution_logs.
+    """
+    try:
+        if not body.user_id:
+            raise HTTPException(status_code=400, detail="user_id is required")
+        
+        if not body.events or len(body.events) == 0:
+            return {
+                "status": "success",
+                "events_created": 0,
+                "message": "No events to create"
+            }
+        
+        # Convert Pydantic models to dicts for the service
+        events_list = [{"title": e.title, "time": e.time} for e in body.events]
+        
+        # Execute via google_calendar_service (fetches token, creates events, logs)
+        result = execute_daily_plan_to_calendar(body.user_id, events_list)
+        
+        logger.info(
+            f"POST /api/execute-calendar-plan user_id={body.user_id} "
+            f"events_created={result.get('events_created', 0)}"
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.exception("execute_calendar_plan failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

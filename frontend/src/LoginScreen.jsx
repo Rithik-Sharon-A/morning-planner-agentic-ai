@@ -34,7 +34,9 @@ function GoogleG() {
   );
 }
 
-const MotionBox = motion(Box);
+// Use motion.create() to avoid deprecation warning (motion() is deprecated in newer Framer Motion)
+const MotionDiv  = typeof motion.create === "function" ? motion.create("div") : motion.div;
+const MotionBox  = typeof motion.create === "function" ? motion.create(Box) : motion(Box);
 
 const card = {
   hidden:  { opacity: 0, y: 28, scale: 0.97 },
@@ -88,13 +90,14 @@ export default function LoginScreen() {
       }} />
 
       {/* Card */}
-      <motion.div initial="hidden" animate="visible" variants={card}>
+      <MotionDiv initial="hidden" animate="visible" variants={card}>
         <Box sx={{
-          width: "100%", maxWidth: 380, mx: 3, p: 4,
+          width: "100%", maxWidth: 380, mx: { xs: 2, sm: 3 }, p: { xs: 2.5, sm: 4 },
           background: C.surface,
           border: `1px solid ${C.border}`,
           borderRadius: "12px",
           position: "relative", zIndex: 1,
+          boxSizing: "border-box",
         }}>
 
           {/* Logo */}
@@ -182,7 +185,7 @@ export default function LoginScreen() {
             Your email is stored securely via Supabase Auth
           </Typography>
         </Box>
-      </motion.div>
+      </MotionDiv>
     </Box>
   );
 }
