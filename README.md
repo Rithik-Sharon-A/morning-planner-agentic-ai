@@ -1,557 +1,237 @@
-# 🤖 AI Student Life Planner
+# AI Student Life Planner
 
-> **An intelligent multi-agent system that generates optimized daily schedules and automatically executes approved plans by creating events in Google Calendar.**
+A multi-agent AI system that generates optimized daily schedules and automatically executes approved plans by creating events in the user's Google Calendar. Individually designed and built as a production-grade agentic pipeline.
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.129.0-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.129-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://reactjs.org/)
 [![CrewAI](https://img.shields.io/badge/CrewAI-Multi--Agent-FF6B6B)](https://www.crewai.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-Auth%20%26%20DB-3ECF8E?logo=supabase)](https://supabase.com/)
+[![OpenRouter](https://img.shields.io/badge/OpenRouter-LLM%20Gateway-8320E6)](https://openrouter.ai/)
+[![Google Calendar API](https://img.shields.io/badge/Google%20Calendar-API-4285F4?logo=google)](https://developers.google.com/calendar)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
-## 📋 Table of Contents
+## Demo
 
-- [Features](#-features)
-- [Architecture](#-architecture)
-- [Tech Stack](#-tech-stack)
-- [Prerequisites](#-prerequisites)
-- [Quick Start](#-quick-start)
-- [Configuration](#-configuration)
-- [Project Structure](#-project-structure)
-- [How It Works](#-how-it-works)
-- [API Documentation](#-api-documentation)
-- [Deployment](#-deployment)
-- [Troubleshooting](#-troubleshooting)
-- [Contributing](#-contributing)
-- [License](#-license)
+Example of a generated full-day schedule (12-hour AM/PM format):
 
----
+| Time     | Activity                  |
+|----------|---------------------------|
+| 7:00 AM  | Wake up                    |
+| 7:15 AM  | Morning preparation        |
+| 7:30 AM  | Breakfast                  |
+| 8:30 AM  | Commute to lecture         |
+| 9:00 AM  | Attend lecture             |
+| 12:30 PM | Lunch break                |
+| 2:00 PM  | Study session              |
+| 6:00 PM  | Exercise or relaxation     |
+| 8:00 PM  | Dinner                     |
+| 9:30 PM  | Prepare for the next day   |
+| 10:30 PM | Sleep                      |
 
-## ✨ Features
-
-### 🧠 **Multi-Agent AI Architecture**
-- **Supervisor Agent**: Orchestrates sub-agents and makes execution decisions
-- **Schedule Agent**: Identifies academic priorities and task management
-- **Logistics Agent**: Plans optimal commute routes and timing
-- **Preference Agent**: Recommends meals based on dietary preferences
-- **Execution Agent**: Automatically creates Google Calendar events
-
-### 📅 **Intelligent Daily Planning**
-- Full-day schedule generation from wake-up to sleep
-- Adapts to user profile, preferences, and daily events
-- Considers wake time, commute mode, diet, and focus goals
-- Chronological timeline with 12-hour AM/PM format
-
-### 🔐 **Secure Authentication**
-- Google OAuth 2.0 via Supabase Auth
-- Persistent user sessions
-- Secure token management
-
-### 💾 **Persistent Memory**
-- User profiles stored in Supabase
-- Personal notes and preferences
-- Historical plan tracking
-- Context-aware planning based on past interactions
-
-### 📆 **Google Calendar Integration**
-- Automatic event creation for approved plans
-- OAuth 2.0 calendar access
-- Configurable confidence threshold for auto-execution
-- Manual override for low-confidence plans
-
-### 🎨 **Modern UI/UX**
-- Responsive React interface
-- Real-time plan generation
-- Visual pipeline progress tracking
-- Dark mode with neon accents
+Plans are derived from the user's profile (diet, wake time, commute mode, focus goal), personal memory, and daily events. When the supervisor's confidence score meets the threshold, events are created automatically in Google Calendar.
 
 ---
 
-## 🏗️ Architecture
+## Key Features
+
+**Multi-Agent AI Architecture** — Supervisor coordinates four specialized agents (Schedule, Logistics, Preference, Execution) using CrewAI. Each agent can use a different LLM via OpenRouter for role-appropriate reasoning.
+
+**Intelligent Daily Planning** — Full-day timeline from wake-up to sleep, adapted to profile and preferences. Output is chronological with short, clear activity labels in 12-hour AM/PM format.
+
+**Google Calendar Automation** — Approved plans are written to the user's primary Google Calendar. OAuth 2.0 token is stored securely; execution runs only after a confidence check.
+
+**Secure Authentication** — Google OAuth 2.0 via Supabase Auth. Session and user state are managed by Supabase; no credentials are hardcoded.
+
+**Persistent User Memory** — Profiles, personal notes, and plan history live in Supabase. Context is injected into every agent run for consistent, personalized plans.
+
+**Modern React UI** — Single-page app with Vite, Material-UI, and Framer Motion. Responsive layout, real-time pipeline feedback, and dark theme.
+
+---
+
+## Architecture
 
 ```
-┌─────────────┐
-│   React     │  User Interface
-│  Frontend   │  (Vite + Material-UI)
-└──────┬──────┘
-       │
-       ↓ HTTP/REST
-┌──────────────────────────────────────┐
-│         FastAPI Backend              │
-│  ┌────────────────────────────────┐  │
-│  │    Supervisor Agent            │  │
-│  │  (Confidence-based Execution)  │  │
-│  └────────┬───────────────────────┘  │
-│           ↓                          │
-│  ┌────────────────────────────────┐  │
-│  │   CrewAI Multi-Agent System    │  │
-│  │  ┌──────────┐  ┌──────────┐   │  │
-│  │  │Schedule  │  │Logistics │   │  │
-│  │  │  Agent   │  │  Agent   │   │  │
-│  │  └──────────┘  └──────────┘   │  │
-│  │  ┌──────────┐  ┌──────────┐   │  │
-│  │  │Preference│  │Execution │   │  │
-│  │  │  Agent   │  │  Agent   │   │  │
-│  │  └──────────┘  └──────────┘   │  │
-│  └────────┬───────────────────────┘  │
-│           ↓                          │
-│  ┌────────────────────────────────┐  │
-│  │   LiteLLM + OpenRouter         │  │
-│  │  (GPT-4, Claude, Llama)        │  │
-│  └────────────────────────────────┘  │
-└──────────┬───────────────────────────┘
-           │
-           ↓
-┌──────────────────────────────────────┐
-│         External Services            │
-│  ┌────────────┐  ┌────────────────┐  │
-│  │  Supabase  │  │ Google Calendar│  │
-│  │  (Auth+DB) │  │      API       │  │
-│  └────────────┘  └────────────────┘  │
-└──────────────────────────────────────┘
+React Frontend (Vite + MUI)
+         │
+         ▼ HTTP/REST
+FastAPI Backend
+         │
+         ▼
+Supervisor Agent (confidence scoring, execution gate)
+         │
+         ▼
+CrewAI Sub-Agents (Schedule | Logistics | Preference)
+         │
+         ▼
+LLM Models via OpenRouter (GPT-4o-mini, Claude, Llama)
+         │
+         ▼
+Supabase (Auth, profile, memory, plans)  +  Google Calendar API (events)
+```
+
+The frontend talks only to the FastAPI backend. The supervisor invokes the crew, aggregates outputs, computes confidence, and—when above threshold—triggers the execution layer to create calendar events. All external calls (Supabase, Google Calendar) are backend-only.
+
+---
+
+## AI Agent System
+
+| Agent | Role |
+|-------|------|
+| **Supervisor Agent** | Orchestrates the crew, synthesizes sub-agent outputs into a full-day plan, and computes a confidence score. Decides whether to auto-execute (create calendar events) or request human confirmation. |
+| **Schedule Agent** | Identifies academic priorities and task ordering from profile, events, and memory. |
+| **Logistics Agent** | Suggests commute routes and timing based on commute mode and schedule. |
+| **Preference Agent** | Recommends meals and dietary choices from the user's diet and preferences. |
+| **Execution Agent** | Runs after supervisor approval: fetches the user's Google token, converts the plan to calendar events, and inserts them via the Google Calendar API. Logs executions in Supabase. |
+
+The supervisor evaluates sub-agent outputs and calculates a **confidence score** before any calendar actions. Only when confidence meets the configured threshold (e.g. 0.7) does the execution agent create events; otherwise the UI can show a manual confirmation path.
+
+---
+
+## Tech Stack
+
+| Layer | Technologies |
+|-------|--------------|
+| **Frontend** | React 18, Vite, Material-UI, Framer Motion, Supabase JS client |
+| **Backend** | FastAPI, Uvicorn, Pydantic |
+| **AI Infrastructure** | CrewAI, LiteLLM, OpenRouter (GPT-4o-mini, Claude 3 Haiku, Llama 3.1 8B) |
+| **Database & Auth** | Supabase (PostgreSQL, Auth), Google OAuth 2.0 |
+| **External APIs** | Google Calendar API (event creation) |
+
+---
+
+## Project Structure
+
+```
+morning-planner-agentic-ai/
+├── backend/
+│   ├── agents/
+│   │   ├── supervisor.py        # Orchestration and confidence gate
+│   │   ├── crewai_agents.py     # Schedule, Logistics, Preference, Supervisor agents
+│   │   ├── execution.py        # Post-plan execution logic
+│   │   └── tool_execution/      # LangChain tools (e.g. calendar)
+│   ├── memory/
+│   │   └── simple_memory.py    # Supabase memory read/write
+│   ├── main.py                 # FastAPI app and routes
+│   ├── db.py                   # Supabase client
+│   ├── llm_factory.py          # LiteLLM/OpenRouter config
+│   ├── google_calendar_service.py
+│   ├── requirements.txt
+│   └── .env.example
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── LoginScreen.jsx
+│   │   └── supabaseClient.js
+│   ├── public/
+│   ├── package.json
+│   └── .env.example
+├── .gitignore
+├── README.md
+└── LICENSE
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## How It Works
 
-### **Frontend**
-- **React 18** - UI framework
-- **Vite** - Build tool and dev server
-- **Material-UI (MUI)** - Component library
-- **Framer Motion** - Animations
-- **Supabase JS Client** - Authentication and database
-
-### **Backend**
-- **FastAPI** - Modern Python web framework
-- **CrewAI** - Multi-agent orchestration
-- **LiteLLM** - Unified LLM interface
-- **OpenRouter** - LLM API gateway
-- **Supabase Python Client** - Database operations
-- **Google Calendar API** - Calendar integration
-
-### **AI Models** (via OpenRouter)
-- **GPT-4o-mini** - Supervisor and Logistics
-- **Claude 3 Haiku** - Schedule planning
-- **Llama 3.1 8B** - Preference recommendations
-
-### **Database & Auth**
-- **Supabase** - PostgreSQL database + Auth
-- **Google OAuth 2.0** - User authentication
+1. **User login** — User signs in with Google via Supabase Auth. Session is established; backend can identify the user by `user_id`.
+2. **Profile stored** — User submits profile (diet, wake time, commute mode, focus goal) and optional events/memory. Data is stored in Supabase.
+3. **Agents analyze** — On "Generate Plan", the backend loads profile, events, and memory, builds a context, and runs the CrewAI crew (Schedule, Logistics, Preference, then Supervisor for the full-day plan).
+4. **Supervisor builds plan** — Supervisor produces a structured daily plan and a confidence score.
+5. **Confidence check** — If score ≥ threshold, the execution agent runs; otherwise the system can flag for manual review.
+6. **Calendar events created** — Execution agent fetches the user's Google Calendar token from Supabase, maps the plan to events with start/end times, and creates them via the Google Calendar API. Results are logged in Supabase.
 
 ---
 
-## 📦 Prerequisites
+## API Overview
 
-Before you begin, ensure you have the following installed:
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/create-user` | Create or update user profile. |
+| `GET` | `/get-profile?user_id=` | Fetch profile (including `calendar_connected` flag). |
+| `GET` | `/morning-plan?user_id=` | Run the full pipeline: agents + supervisor + optional calendar execution. Returns plan and execution summary. |
+| `GET` | `/plans?user_id=` | List recent generated plans. |
+| `POST` | `/add-memory` | Store a personal memory entry. |
+| `POST` | `/api/store-google-token` | Store the user's Google Calendar OAuth token. |
+| `POST` | `/api/execute-calendar-plan` | Manually trigger calendar event creation from a plan payload. |
+| `POST` | `/upsert-auth-user` | Sync Supabase Auth user (e.g. after Google login). |
 
-- **Git** - [Download](https://git-scm.com/)
-- **Node.js 18+** - [Download](https://nodejs.org/)
-- **Python 3.10+** - [Download](https://python.org/)
-- **pip** - Python package manager (included with Python)
-
-You'll also need accounts for:
-- **Supabase** - [Sign up](https://supabase.com/)
-- **OpenRouter** - [Sign up](https://openrouter.ai/)
-- **Google Cloud Console** - [Console](https://console.cloud.google.com/)
+Interactive API docs: `http://localhost:8000/docs`.
 
 ---
 
-## 🚀 Quick Start
+## Setup Instructions
 
-### 1. Clone the Repository
+**Prerequisites:** Git, Node.js 18+, Python 3.10+, and accounts for Supabase, OpenRouter, and Google Cloud (for Calendar API and OAuth).
+
+**1. Clone the repository**
 
 ```bash
-git clone https://github.com/yourusername/ai-student-life-planner.git
-cd ai-student-life-planner
+git clone https://github.com/Rithik-Sharon-A/morning-planner-agentic-ai.git
+cd morning-planner-agentic-ai
 ```
 
-### 2. Backend Setup
+**2. Backend**
 
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv venv
 
-# Activate virtual environment
-# Windows:
+# Windows
 .\venv\Scripts\activate
-# Mac/Linux:
+# macOS/Linux
 source venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Copy environment template
 cp .env.example .env
-# Edit .env with your credentials (see Configuration section)
+# Edit .env: OPENROUTER_API_KEY, SUPABASE_*, GOOGLE_CLIENT_*, etc.
 
-# Start backend server
 python main.py
 ```
 
-Backend will run at: `http://localhost:8000`  
-API docs available at: `http://localhost:8000/docs`
+Backend: `http://localhost:8000` · Docs: `http://localhost:8000/docs`
 
-### 3. Frontend Setup
+**3. Frontend**
 
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Copy environment template
 cp .env.example .env
-# Edit .env with your credentials (see Configuration section)
+# Edit .env: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_API_URL, VITE_GOOGLE_CLIENT_ID
 
-# Start development server
 npm run dev
 ```
 
-Frontend will run at: `http://localhost:5173`
+Frontend: `http://localhost:5173`
 
-### 4. Database Setup
+**4. Environment variables**
 
-1. Create a Supabase project at [supabase.com](https://supabase.com/)
-2. Run the SQL scripts in `backend/` to create tables:
-   - `supabase_add_access_token.sql`
-   - `supabase_execution_logs.sql`
-3. Enable Google OAuth in Supabase Auth settings
+- **Backend (`.env`):** `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONFIDENCE_THRESHOLD`, `*_MODEL` (per-agent), `CORS_ORIGINS`.
+- **Frontend (`.env`):** `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_URL`, `VITE_GOOGLE_CLIENT_ID`.
 
----
-
-## ⚙️ Configuration
-
-### Backend Configuration (`backend/.env`)
-
-```env
-# OpenRouter Configuration
-USE_OPENROUTER=true
-OPENROUTER_API_KEY=your_openrouter_api_key
-OPENROUTER_MODEL=openai/gpt-4o-mini
-
-# Agent Models
-SUPERVISOR_MODEL=openai/gpt-4o-mini
-LOGISTICS_MODEL=openai/gpt-4o-mini
-PREFERENCE_MODEL=meta-llama/llama-3.1-8b-instruct
-SCHEDULE_MODEL=anthropic/claude-3-haiku
-
-# Execution Settings
-CONFIDENCE_THRESHOLD=0.7
-API_HOST=0.0.0.0
-API_PORT=8000
-
-# Supabase
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-
-# Google OAuth
-GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your_client_secret
-
-# CORS
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000
-```
-
-### Frontend Configuration (`frontend/.env`)
-
-```env
-# Supabase
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your_anon_key
-
-# Backend API
-VITE_API_URL=http://localhost:8000
-
-# Google OAuth
-VITE_GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com
-```
-
-### Getting API Keys
-
-#### OpenRouter API Key
-1. Sign up at [openrouter.ai](https://openrouter.ai/)
-2. Navigate to API Keys
-3. Create a new key
-4. Add credits to your account
-
-#### Supabase Credentials
-1. Create project at [supabase.com](https://supabase.com/)
-2. Go to Settings → API
-3. Copy `Project URL` and `anon public` key
-4. Copy `service_role` key (keep secret!)
-
-#### Google OAuth Setup
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project
-3. Enable Google Calendar API
-4. Create OAuth 2.0 credentials (Web application)
-5. Add authorized redirect URIs:
-   - `http://localhost:5173`
-   - Your production URL
-6. Add authorized JavaScript origins:
-   - `http://localhost:5173`
-   - Your production URL
-7. Copy Client ID and Client Secret
+Use `backend/.env.example` and `frontend/.env.example` as templates. Never commit real keys.
 
 ---
 
-## 📁 Project Structure
+## Deployment
 
-```
-ai-student-life-planner/
-├── backend/
-│   ├── agents/
-│   │   ├── supervisor.py           # Supervisor orchestration
-│   │   ├── crewai_agents.py        # Agent definitions
-│   │   ├── execution.py            # Execution logic
-│   │   └── tool_execution/         # LangChain tools
-│   ├── memory/
-│   │   └── simple_memory.py        # Memory management
-│   ├── main.py                     # FastAPI application
-│   ├── db.py                       # Supabase client
-│   ├── llm_factory.py              # LLM initialization
-│   ├── google_calendar_service.py  # Calendar integration
-│   ├── requirements.txt            # Python dependencies
-│   ├── .env.example                # Environment template
-│   └── *.sql                       # Database schemas
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx                 # Main application
-│   │   ├── LoginScreen.jsx         # Authentication
-│   │   └── supabaseClient.js       # Supabase config
-│   ├── public/
-│   │   └── favicon.svg             # App icon
-│   ├── package.json                # Node dependencies
-│   └── .env.example                # Environment template
-├── .gitignore                      # Git ignore rules
-├── README.md                       # This file
-├── SUPABASE_AUTH_FIXES.md          # Auth troubleshooting
-└── INFINITE_LOOP_FIXES.md          # Performance fixes
-```
+**Backend (e.g. Railway, Render, Fly.io):** Set all backend env vars in the platform dashboard. Build from repo; install with `pip install -r requirements.txt`. Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`. Ensure the production frontend origin is in `CORS_ORIGINS`.
+
+**Frontend (e.g. Vercel, Netlify):** Build command `npm run build`, output directory `dist`. Set `VITE_API_URL` to the deployed backend URL and configure `VITE_SUPABASE_*` and `VITE_GOOGLE_CLIENT_ID`. Add the production frontend URL to Google OAuth authorized origins and Supabase redirect URLs.
 
 ---
 
-## 🔄 How It Works
+## License
 
-### 1. **User Authentication**
-- User clicks "Continue with Google"
-- Supabase handles OAuth flow
-- User profile created/updated in database
-
-### 2. **Profile & Memory**
-- User fills profile (diet, wake time, commute mode, focus goal)
-- Optional: Add personal memory notes
-- Data stored in Supabase for context
-
-### 3. **Plan Generation**
-- User clicks "Save Profile & Generate Plan"
-- Backend fetches profile, events, and memories
-- Supervisor coordinates 4 specialized agents:
-  - **Schedule Agent**: Analyzes academic priorities
-  - **Logistics Agent**: Plans commute and routes
-  - **Preference Agent**: Suggests meals
-  - **Supervisor Agent**: Synthesizes full-day timeline
-- Agents use different LLMs for specialized reasoning
-
-### 4. **Confidence-Based Execution**
-- Supervisor calculates confidence score (0-1)
-- If `confidence >= threshold` (default 0.7):
-  - ✅ Auto-execute: Create Google Calendar events
-  - ✅ Log execution to database
-- If `confidence < threshold`:
-  - ⚠️ Request human confirmation
-  - 🔍 Show reasoning for review
-
-### 5. **Calendar Integration**
-- Fetch user's Google OAuth token from database
-- Convert timeline to calendar events
-- Create events in user's primary calendar
-- Log each created event
+MIT License. See [LICENSE](LICENSE) in the repository.
 
 ---
 
-## 📚 API Documentation
+## Author
 
-### Key Endpoints
+**Rithik Sharon A**  
+([Vibecoderithik](https://github.com/Rithik-Sharon-A))
 
-#### `POST /create-user`
-Create or update user profile
-```json
-{
-  "user_id": "uuid",
-  "diet": "Vegetarian",
-  "commute_mode": "Bus",
-  "wake_time": "7:00 AM",
-  "focus_goal": "Study for exams"
-}
-```
-
-#### `GET /morning-plan?user_id={uuid}`
-Generate daily plan
-```json
-{
-  "meal": "Oatmeal with fruits",
-  "route": "Take bus #42 at 8:15 AM",
-  "priority": "Focus on Math assignment",
-  "confidence": 0.85,
-  "daily_plan": [
-    {"time": "7:00 AM", "activity": "Wake up"},
-    {"time": "7:30 AM", "activity": "Breakfast"}
-  ],
-  "execution": {
-    "calendar": {
-      "status": "success",
-      "events_created": 10
-    }
-  }
-}
-```
-
-#### `POST /api/store-google-token`
-Store Google Calendar OAuth token
-```json
-{
-  "user_id": "uuid",
-  "access_token": "ya29.a0..."
-}
-```
-
-#### `POST /api/execute-calendar-plan`
-Manually trigger calendar event creation
-```json
-{
-  "user_id": "uuid",
-  "events": [
-    {"title": "Wake up", "time": "7:00 AM"}
-  ]
-}
-```
-
-Full API documentation: `http://localhost:8000/docs`
-
----
-
-## 🚢 Deployment
-
-### Backend Deployment (Railway/Render/Fly.io)
-
-1. Set environment variables in platform dashboard
-2. Deploy from GitHub repository
-3. Ensure `requirements.txt` is present
-4. Set start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-
-### Frontend Deployment (Vercel/Netlify)
-
-1. Connect GitHub repository
-2. Set build command: `npm run build`
-3. Set output directory: `dist`
-4. Add environment variables from `.env.example`
-5. Update `VITE_API_URL` to production backend URL
-
-### Environment Variables Checklist
-
-**Backend:**
-- ✅ `OPENROUTER_API_KEY`
-- ✅ `SUPABASE_URL`
-- ✅ `SUPABASE_ANON_KEY`
-- ✅ `SUPABASE_SERVICE_ROLE_KEY`
-- ✅ `GOOGLE_CLIENT_ID`
-- ✅ `GOOGLE_CLIENT_SECRET`
-- ✅ `CORS_ORIGINS` (add production frontend URL)
-
-**Frontend:**
-- ✅ `VITE_SUPABASE_URL`
-- ✅ `VITE_SUPABASE_ANON_KEY`
-- ✅ `VITE_API_URL` (production backend URL)
-- ✅ `VITE_GOOGLE_CLIENT_ID`
-
----
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-#### "Lock not released" errors
-- **Cause**: Multiple `getUser()` calls
-- **Fix**: See `SUPABASE_AUTH_FIXES.md`
-
-#### Plans taking > 5 minutes
-- **Cause**: Infinite loops or slow LLM responses
-- **Fix**: See `INFINITE_LOOP_FIXES.md`
-
-#### Google Calendar not connecting
-- **Cause**: Missing OAuth scope or token
-- **Fix**: 
-  1. Ensure `VITE_GOOGLE_CLIENT_ID` is set
-  2. Click "Connect Google Calendar" in UI
-  3. Grant calendar permissions
-  4. Check `user_profile.access_token` in database
-
-#### Agents not using profile data
-- **Cause**: Memory not being passed to agents
-- **Fix**: Check `_build_memory_context` in `supervisor.py`
-
-### Debug Mode
-
-Enable verbose logging:
-```python
-# backend/agents/crewai_agents.py
-crew = Crew(
-    agents=[...],
-    tasks=[...],
-    verbose=True  # Enable detailed logs
-)
-```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow PEP 8 for Python code
-- Use ESLint/Prettier for JavaScript
-- Add comments for complex logic
-- Update documentation for new features
-- Test thoroughly before submitting PR
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **CrewAI** - Multi-agent orchestration framework
-- **OpenRouter** - Unified LLM API
-- **Supabase** - Backend-as-a-Service
-- **FastAPI** - Modern Python web framework
-- **React** - UI library
-
----
-
-## 📞 Support
-
-For issues, questions, or suggestions:
-- 🐛 [Open an issue](https://github.com/yourusername/ai-student-life-planner/issues)
-- 💬 [Discussions](https://github.com/yourusername/ai-student-life-planner/discussions)
-- 📧 Email: your.email@example.com
-
----
-
-**Built with ❤️ for students by students**
+Independently designed and developed as an agentic AI system demonstrating multi-agent orchestration, automated planning, and real-world API integrations (Supabase, Google Calendar).
