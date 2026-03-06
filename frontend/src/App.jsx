@@ -7,6 +7,7 @@ import {
   LinearProgress, CircularProgress, Alert,
   Accordion, AccordionSummary, AccordionDetails,
   Divider, Tooltip, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
+  Checkbox,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
@@ -26,7 +27,8 @@ import TuneIcon from "@mui/icons-material/Tune";
 import LogoutIcon from "@mui/icons-material/Logout";
 import EventNoteIcon from "@mui/icons-material/EventNote";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
-import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
+import CalendarTodayIcon from "@mui/icons-material/CalendarToday";
 import { supabase } from "./supabaseClient";
 import LoginScreen from "./LoginScreen";
 
@@ -285,8 +287,17 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resetDeleting, setResetDeleting] = useState(false);
-  const [calendarConnecting, setCalendarConnecting] = useState(false);
-  const [calendarMessage, setCalendarMessage] = useState(null); // "success" | "error" message text
+  const [currentDateTime, setCurrentDateTime] = useState(new Date());
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+
+  // ── Update browser time every second ──────────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentDateTime(new Date());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   // ── Auth: centralized authentication state management ──────────────
   useEffect(() => {
@@ -403,6 +414,22 @@ export default function App() {
     }
   };
 
+  const fetchTasks = async (uid) => {
+    if (!uid) return;
+    setTasksLoading(true);
+    try {
+      const res = await fetch(`${BASE}/tasks?user_id=${uid}`);
+      if (res.ok) {
+        const data = await res.json();
+        setTasks(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch tasks:", err);
+    } finally {
+      setTasksLoading(false);
+    }
+  };
+
   const handleChange = (e) =>
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
 
@@ -485,14 +512,24 @@ export default function App() {
     }, 60000);
     
     try {
-      const res = await fetch(`${BASE}/morning-plan?user_id=${uid}`, {
-        signal: controller.signal,
-      });
+      // Get current browser time
+      const now = new Date();
+      const currentTime = now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
+      const currentDate = now.toLocaleDateString("en-IN", { year: "numeric", month: "long", day: "numeric" });
+      const dayOfWeek = now.toLocaleDateString("en-IN", { weekday: "long" });
+
+      const res = await fetch(
+        `${BASE}/morning-plan?user_id=${uid}&current_time=${encodeURIComponent(currentTime)}&current_date=${encodeURIComponent(currentDate)}&day_of_week=${encodeURIComponent(dayOfWeek)}`,
+        { signal: controller.signal }
+      );
       clearTimeout(timeoutId);
       
       if (!res.ok) throw new Error("Failed to fetch morning plan.");
       const data = await res.json();
       setPlan(data);
+      
+      // Fetch tasks after plan is generated
+      await fetchTasks(uid);
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
@@ -539,6 +576,24 @@ export default function App() {
     }
   };
 
+  const handleCompleteTask = async (taskId) => {
+    if (!user?.id) return;
+    try {
+      const res = await fetch(`${BASE}/tasks/${taskId}/complete?user_id=${user.id}`, {
+        method: "PATCH",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to complete task");
+      }
+      // Reload tasks after completion
+      await fetchTasks(user.id);
+    } catch (err) {
+      console.error("Failed to complete task:", err);
+      setError(err.message || "Failed to complete task");
+    }
+  };
+
   const handleLogout = async () => {
     try {
       // Sign out from Supabase
@@ -559,80 +614,6 @@ export default function App() {
     }
   };
 
-  // Load Google Identity Services script once for Calendar OAuth
-  const loadGsiScript = () => {
-    if (window.google?.accounts?.oauth2) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const id = "gsi-oauth-script";
-      if (document.getElementById(id)) {
-        if (window.google?.accounts?.oauth2) resolve();
-        else window.addEventListener("load", () => (window.google?.accounts?.oauth2 ? resolve() : reject(new Error("GIS not available"))));
-        return;
-      }
-      const script = document.createElement("script");
-      script.id = id;
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error("Failed to load Google Identity Services"));
-      document.head.appendChild(script);
-    });
-  };
-
-  const handleConnectCalendar = async () => {
-    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    if (!clientId?.trim()) {
-      setCalendarMessage("Failed to connect Google Calendar. (Google Client ID not configured.)");
-      return;
-    }
-    if (!user?.id) {
-      setCalendarMessage("Failed to connect Google Calendar. (Not signed in.)");
-      return;
-    }
-    setCalendarConnecting(true);
-    setCalendarMessage(null);
-    try {
-      await loadGsiScript();
-      const tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: clientId.trim(),
-        scope: "https://www.googleapis.com/auth/calendar.events",
-        callback: async (tokenResponse) => {
-          if (!tokenResponse?.access_token) {
-            setCalendarMessage("Failed to connect Google Calendar.");
-            setCalendarConnecting(false);
-            return;
-          }
-          try {
-            const res = await fetch(`${BASE}/api/store-google-token`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                user_id: user.id,
-                access_token: tokenResponse.access_token,
-              }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-              setCalendarMessage(data.detail || "Failed to connect Google Calendar.");
-              return;
-            }
-            setCalendarMessage("Google Calendar connected successfully.");
-            await fetchProfile(user.id);
-          } catch (e) {
-            setCalendarMessage("Failed to connect Google Calendar.");
-          } finally {
-            setCalendarConnecting(false);
-          }
-        },
-      });
-      tokenClient.requestAccessToken();
-      // If popup is closed without granting, we never get callback; reset loading after a timeout
-      setTimeout(() => setCalendarConnecting((prev) => (prev ? false : prev)), 60000);
-    } catch (e) {
-      setCalendarMessage(e?.message || "Failed to connect Google Calendar.");
-      setCalendarConnecting(false);
-    }
-  };
 
   // ── Auth gates ────────────────────────────────────────────────────────────
 
@@ -922,62 +903,30 @@ export default function App() {
               </Card>
             </MotionDiv>
 
-            {/* ── Google Calendar ── */}
+            {/* ── Current Date & Time ── */}
             <MotionDiv variants={fadeUp}>
               <Card sx={{ mb: 2.5, borderColor: C.border }}>
                 <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2, pb: 2, borderBottom: `1px solid ${C.border}` }}>
-                    <CalendarMonthIcon sx={{ color: C.textMuted, fontSize: 18 }} />
+                    <AccessTimeIcon sx={{ color: C.textMuted, fontSize: 18 }} />
                     <Typography variant="caption" sx={{ color: C.textSec, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.65rem" }}>
-                      Google Calendar
+                      Current Time
                     </Typography>
                   </Box>
-                  {savedProfile?.calendar_connected ? (
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-                      <CheckCircleIcon sx={{ color: C.neon, fontSize: 22 }} />
-                      <Typography variant="body2" sx={{ color: C.neon, fontWeight: 600, fontSize: "0.9rem" }}>
-                        Google Calendar Connected
+                      <CalendarTodayIcon sx={{ color: C.neon, fontSize: 20 }} />
+                      <Typography variant="body2" sx={{ color: C.textPri, fontWeight: 600, fontSize: "0.95rem" }}>
+                        {currentDateTime.toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
                       </Typography>
                     </Box>
-                  ) : (
-                    <>
-                      <Typography variant="body2" sx={{ color: C.textSec, mb: 2, fontSize: "0.85rem" }}>
-                        Connect your Google account so approved daily plans can be added to your calendar.
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                      <AccessTimeIcon sx={{ color: C.neon, fontSize: 20 }} />
+                      <Typography variant="body2" sx={{ color: C.textPri, fontWeight: 600, fontSize: "0.95rem" }}>
+                        {currentDateTime.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
                       </Typography>
-                      <Button
-                        variant="outlined"
-                        onClick={handleConnectCalendar}
-                        disabled={calendarConnecting}
-                        startIcon={calendarConnecting ? <CircularProgress size={16} color="inherit" /> : <CalendarMonthIcon sx={{ fontSize: 18 }} />}
-                        sx={{
-                          borderColor: C.border,
-                          color: C.textSec,
-                          textTransform: "none",
-                          fontWeight: 600,
-                          fontSize: "0.875rem",
-                          "&:hover": { borderColor: C.neon, color: C.neon },
-                        }}
-                      >
-                        {calendarConnecting ? "Connecting…" : "Connect Google Calendar"}
-                      </Button>
-                      <AnimatePresence>
-                        {calendarMessage && (
-                          <MotionDiv initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} sx={{ mt: 2 }}>
-                            <Typography
-                              variant="body2"
-                              sx={{
-                                color: calendarMessage.includes("successfully") ? C.neon : C.error,
-                                fontWeight: 500,
-                                fontSize: "0.85rem",
-                              }}
-                            >
-                              {calendarMessage}
-                            </Typography>
-                          </MotionDiv>
-                        )}
-                      </AnimatePresence>
-                    </>
-                  )}
+                    </Box>
+                  </Box>
                 </CardContent>
               </Card>
             </MotionDiv>
@@ -1178,51 +1127,84 @@ export default function App() {
                               },
                             }}
                           >
-                            {plan.daily_plan.map((item, idx) => (
-                              <Box
-                                key={idx}
-                                sx={{
-                                  position: "relative",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 2,
-                                  py: 1,
-                                  pl: 2.5,
-                                  borderBottom: idx < plan.daily_plan.length - 1 ? `1px solid ${C.border}` : "none",
-                                }}
-                              >
+                            {plan.daily_plan.map((item, idx) => {
+                              // Find corresponding task from tasks array
+                              const task = tasks.find(t => 
+                                t.task === item.activity && 
+                                new Date(t.start_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }) === item.time
+                              );
+                              const isCompleted = task?.status === "completed";
+
+                              return (
                                 <Box
+                                  key={idx}
                                   sx={{
-                                    position: "absolute",
-                                    left: 4,
-                                    top: "50%",
-                                    transform: "translateY(-50%)",
-                                    width: 10,
-                                    height: 10,
-                                    borderRadius: "50%",
-                                    bgcolor: C.neon,
-                                    boxShadow: `0 0 8px ${C.neonGlow}`,
-                                    flexShrink: 0,
-                                  }}
-                                />
-                                <Typography
-                                  variant="caption"
-                                  sx={{
-                                    minWidth: 88,
-                                    fontFamily: C.fontMono,
-                                    color: C.neon,
-                                    fontWeight: 600,
-                                    fontSize: "0.85rem",
-                                    flexShrink: 0,
+                                    position: "relative",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 2,
+                                    py: 1,
+                                    pl: 2.5,
+                                    borderBottom: idx < plan.daily_plan.length - 1 ? `1px solid ${C.border}` : "none",
                                   }}
                                 >
-                                  {item.time}
-                                </Typography>
-                                <Typography variant="body2" sx={{ color: C.textPri, fontSize: "0.875rem", lineHeight: 1.5 }}>
-                                  {item.activity}
-                                </Typography>
-                              </Box>
-                            ))}
+                                  <Box
+                                    sx={{
+                                      position: "absolute",
+                                      left: 4,
+                                      top: "50%",
+                                      transform: "translateY(-50%)",
+                                      width: 10,
+                                      height: 10,
+                                      borderRadius: "50%",
+                                      bgcolor: isCompleted ? C.textMuted : C.neon,
+                                      boxShadow: isCompleted ? "none" : `0 0 8px ${C.neonGlow}`,
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                  {task && (
+                                    <Checkbox
+                                      checked={isCompleted}
+                                      onChange={() => !isCompleted && handleCompleteTask(task.id)}
+                                      disabled={isCompleted}
+                                      size="small"
+                                      sx={{
+                                        color: C.neon,
+                                        padding: 0,
+                                        ml: 1,
+                                        "&.Mui-checked": { color: C.neon },
+                                        "&.Mui-disabled": { color: C.textMuted },
+                                      }}
+                                    />
+                                  )}
+                                  <Typography
+                                    variant="caption"
+                                    sx={{
+                                      minWidth: 88,
+                                      fontFamily: C.fontMono,
+                                      color: isCompleted ? C.textMuted : C.neon,
+                                      fontWeight: 600,
+                                      fontSize: "0.85rem",
+                                      flexShrink: 0,
+                                      textDecoration: isCompleted ? "line-through" : "none",
+                                    }}
+                                  >
+                                    {item.time}
+                                  </Typography>
+                                  <Typography 
+                                    variant="body2" 
+                                    sx={{ 
+                                      color: isCompleted ? C.textMuted : C.textPri, 
+                                      fontSize: "0.875rem", 
+                                      lineHeight: 1.5,
+                                      textDecoration: isCompleted ? "line-through" : "none",
+                                    }}
+                                  >
+                                    {item.activity}
+                                  </Typography>
+                                </Box>
+                              );
+                            })}
                           </Box>
                         ) : (
                           <Typography variant="body2" sx={{ color: C.textMuted, fontStyle: "italic", fontSize: "0.85rem" }}>
@@ -1296,18 +1278,18 @@ export default function App() {
                                 </Typography>
                               </Box>
                             )}
-                            {plan.execution.calendar && plan.execution.calendar.status === "success" && (
+                            {plan.execution.tasks && plan.execution.tasks.status === "success" && (
                               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                                 <CheckCircleIcon sx={{ color: C.neon, fontSize: 15 }} />
                                 <Typography variant="body2" sx={{ color: C.textPri, fontSize: "0.85rem" }}>
-                                  {plan.execution.calendar.events_created} event{plan.execution.calendar.events_created !== 1 ? "s" : ""} added to Google Calendar
+                                  {plan.execution.tasks.tasks_created} task{plan.execution.tasks.tasks_created !== 1 ? "s" : ""} saved
                                 </Typography>
                               </Box>
                             )}
-                            {plan.execution.calendar && plan.execution.calendar.status === "error" && (
+                            {plan.execution.tasks && plan.execution.tasks.status === "error" && (
                               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                                 <Typography variant="body2" sx={{ color: C.error, fontSize: "0.85rem" }}>
-                                  Calendar: {plan.execution.calendar.message || "Failed to create events"}
+                                  Tasks: {plan.execution.tasks.message || "Failed to save tasks"}
                                 </Typography>
                               </Box>
                             )}
