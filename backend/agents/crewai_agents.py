@@ -60,8 +60,23 @@ MemoryContext = dict[str, Any]  # profile: dict | None, personal_memory: list[st
 
 
 def _build_full_context_string(memory_context: MemoryContext) -> str:
-    """Build the single context string injected into every agent prompt: profile, personal notes, events."""
+    """Build the single context string injected into every agent prompt: profile, personal notes, events, and current time."""
     parts = []
+
+    # Browser time context
+    current_time = memory_context.get("current_time")
+    current_date = memory_context.get("current_date")
+    day_of_week = memory_context.get("day_of_week")
+    
+    if current_time or current_date or day_of_week:
+        time_parts = []
+        if day_of_week:
+            time_parts.append(f"Day: {day_of_week}")
+        if current_date:
+            time_parts.append(f"Date: {current_date}")
+        if current_time:
+            time_parts.append(f"Current Time: {current_time}")
+        parts.append("Current Context:\n  " + "\n  ".join(time_parts))
 
     profile = memory_context.get("profile") or {}
     if profile:
@@ -252,6 +267,17 @@ def run_crew(memory_context: MemoryContext, user_id: str | None = None) -> dict:
         context=[schedule_task, logistics_task, preference_task],
     )
 
+    # Build time constraint for prompt
+    time_constraint = ""
+    current_time = memory_context.get("current_time")
+    if current_time:
+        time_constraint = (
+            f"\n\nIMPORTANT: Current time is {current_time}. "
+            "Generate a schedule ONLY for the remaining part of today. "
+            "Do NOT create activities before the current time. "
+            "Start the plan from the current time or the next logical activity after it."
+        )
+
     full_day_plan_task = Task(
         description=(
             f"{agent_input}\n\n"
@@ -262,7 +288,8 @@ def run_crew(memory_context: MemoryContext, user_id: str | None = None) -> dict:
             "Produce a FULL DAY intelligent plan from wake-up to sleep. Use the user's wake time, profile, and events. "
             "Include: wake up, morning preparation, breakfast, commute, academic work/lectures, lunch, study time, breaks, "
             "evening activity (e.g. exercise or relaxation), dinner, preparation for the next day, and sleep. "
-            "Use clear, respectful wording. Adapt to preferences from memory (e.g. if user prefers studying at night, move study to evening).\n\n"
+            "Use clear, respectful wording. Adapt to preferences from memory (e.g. if user prefers studying at night, move study to evening)."
+            f"{time_constraint}\n\n"
             "RULES:\n"
             "- Time MUST be in 12-hour format with AM/PM (e.g. 7:00 AM, 12:30 PM, 10:30 PM). Never use 24h (no 13:00, 0:30).\n"
             "- Activities must be SHORT labels (2–4 words), e.g. 'Wake up', 'Morning preparation', 'Breakfast', 'Commute to lecture', "

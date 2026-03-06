@@ -14,7 +14,7 @@ from db import supabase
 from agents.supervisor import SupervisorAgent
 from agents.tool_execution import run_tool_execution
 from memory.simple_memory import add_memory
-from google_calendar_service import execute_daily_plan_to_calendar
+from task_service import get_user_tasks, complete_task
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -70,22 +70,6 @@ class AuthUserIn(BaseModel):
     email: str | None = None  # Google email; optional so null/omit never fails validation
 
 
-class DailyPlanEvent(BaseModel):
-    """Single event from daily plan timeline."""
-    title: str
-    time: str  # e.g. "7:00 AM" or "07:00"
-
-
-class ExecuteCalendarPlanIn(BaseModel):
-    """Request body for /api/execute-calendar-plan endpoint."""
-    user_id: str
-    events: list[DailyPlanEvent]
-
-
-class StoreGoogleTokenIn(BaseModel):
-    """Request body for POST /api/store-google-token. Frontend sends after user grants Calendar scope."""
-    user_id: str
-    access_token: str
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -94,33 +78,6 @@ async def root():
     return {"status": "Morning Agent Running"}
 
 
-@app.post("/api/store-google-token")
-async def store_google_token(body: StoreGoogleTokenIn):
-    """
-    Store the user's Google OAuth access_token in Supabase user_profile.
-    Frontend calls this after the user completes Google Calendar OAuth consent.
-    Security: only the authenticated user's token is stored (user_id from Supabase session).
-    """
-    try:
-        if not body.user_id or not body.user_id.strip():
-            raise HTTPException(status_code=400, detail="user_id is required")
-        if not body.access_token or not body.access_token.strip():
-            raise HTTPException(status_code=400, detail="access_token is required")
-
-        user_id = body.user_id.strip()
-        access_token = body.access_token.strip()
-
-        # Update access_token for the authenticated user only (do not overwrite other columns).
-        # Requires an existing user_profile row (created on login via upsert-auth-user).
-        supabase.table("user_profile").update({"access_token": access_token}).eq("id", user_id).execute()
-
-        logger.info(f"POST /api/store-google-token user_id={user_id} token stored")
-        return {"status": "ok", "message": "Google token stored"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("store_google_token failed")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/upsert-auth-user")
@@ -211,9 +168,8 @@ async def get_profile(user_id: str = Query(...)):
         if not res.data:
             return None  # 200 + null so frontend can clear stale user_id
         row = dict(res.data[0])
-        # Do not expose access_token to frontend; expose only a boolean for UI state
-        access_token = row.pop("access_token", None)
-        row["calendar_connected"] = bool(access_token and str(access_token).strip())
+        # Remove access_token from response (no longer used)
+        row.pop("access_token", None)
         return row
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -228,10 +184,52 @@ async def get_plans(user_id: str = Query(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/morning-plan")
-async def morning_plan(user_id: str = Query(default=None)):
+@app.get("/tasks")
+async def get_tasks(user_id: str = Query(...), status: str = Query(default=None)):
+    """
+    Fetch AI-generated tasks for a user from Supabase ai_tasks table.
+    
+    Query params:
+        user_id: User ID (required)
+        status: Optional status filter ('pending', 'completed', 'cancelled')
+    """
     try:
-        logger.info(f"GET /morning-plan user_id={user_id}")
+        tasks = get_user_tasks(user_id, status)
+        return tasks
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/tasks/{task_id}/complete")
+async def complete_task_endpoint(task_id: str, user_id: str = Query(...)):
+    """
+    Mark a task as completed.
+    
+    Path params:
+        task_id: Task UUID
+    Query params:
+        user_id: User ID (for security verification)
+    """
+    try:
+        result = complete_task(task_id, user_id)
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["message"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/morning-plan")
+async def morning_plan(
+    user_id: str = Query(default=None),
+    current_time: str = Query(default=None),
+    current_date: str = Query(default=None),
+    day_of_week: str = Query(default=None)
+):
+    try:
+        logger.info(f"GET /morning-plan user_id={user_id} current_time={current_time}")
         profile = None
         events = []
 
@@ -245,7 +243,14 @@ async def morning_plan(user_id: str = Query(default=None)):
             events = [row["event_text"] for row in e.data] if e.data else []
 
         supervisor = SupervisorAgent()
-        decision = supervisor.get_decision(profile=profile, events=events, user_id=user_id)
+        decision = supervisor.get_decision(
+            profile=profile, 
+            events=events, 
+            user_id=user_id,
+            current_time=current_time,
+            current_date=current_date,
+            day_of_week=day_of_week
+        )
 
         # Store generated plan
         if user_id:
@@ -275,6 +280,7 @@ async def delete_user_data(user_id: str = Query(..., description="Authenticated 
         supabase.table("daily_events").delete().eq("user_id", user_id).execute()
         supabase.table("generated_plans").delete().eq("user_id", user_id).execute()
         supabase.table("user_memories").delete().eq("user_id", user_id).execute()
+        supabase.table("ai_tasks").delete().eq("user_id", user_id).execute()
         try:
             supabase.table("schedule_history").delete().eq("user_id", user_id).execute()
         except Exception:
@@ -299,88 +305,6 @@ async def delete_user_data(user_id: str = Query(..., description="Authenticated 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/execute-calendar-plan")
-async def execute_calendar_plan(body: ExecuteCalendarPlanIn):
-    """
-    Execute daily plan by creating events in user's Google Calendar.
-    
-    Flow: User Request → Planning Agents → Supervisor Agent → Confidence Check → 
-          Execution Agent → Google Calendar Tool → Events Created
-    
-    Only triggered when Supervisor confidence >= threshold (default 0.8).
-    Fetches user's Google OAuth token from Supabase (security: only authenticated user's token).
-    Creates events in primary calendar and logs to execution_logs.
-    """
-    try:
-        if not body.user_id:
-            raise HTTPException(status_code=400, detail="user_id is required")
-        
-        if not body.events or len(body.events) == 0:
-            return {
-                "status": "success",
-                "events_created": 0,
-                "message": "No events to create"
-            }
-        
-        # Convert Pydantic models to dicts for the service
-        events_list = [{"title": e.title, "time": e.time} for e in body.events]
-        
-        # Execute via google_calendar_service (fetches token, creates events, logs)
-        result = execute_daily_plan_to_calendar(body.user_id, events_list)
-        
-        logger.info(
-            f"POST /api/execute-calendar-plan user_id={body.user_id} "
-            f"events_created={result.get('events_created', 0)}"
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.exception("execute_calendar_plan failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/execute-calendar-events")
-async def execute_calendar_events(body: ExecuteCalendarEventsIn):
-    """
-    Trigger the LangChain Tool Execution Agent to write events to Google Calendar.
-
-    Only the Supervisor (or an authorised orchestrator) should use this when
-    confidence >= threshold. Accepts structured events with ISO 8601 datetimes.
-    """
-    try:
-        if not body.events:
-            return {
-                "execution_status": "completed",
-                "tool": "google_calendar",
-                "total_events": 0,
-                "success_count": 0,
-                "failure_count": 0,
-                "results": [],
-                "errors": [],
-            }
-        events = [
-            {
-                "title": e.title,
-                "start_time": e.start_time,
-                "end_time": e.end_time,
-                "description": e.description or "",
-            }
-            for e in body.events
-        ]
-        result = run_tool_execution(events, user_id=body.user_id)
-        logger.info(
-            "POST /execute-calendar-events user_id=%s success=%s failure=%s",
-            body.user_id,
-            result.get("success_count", 0),
-            result.get("failure_count", 0),
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Tool execution failed")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

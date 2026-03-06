@@ -10,11 +10,26 @@ logger = logging.getLogger(__name__)
 
 
 class SupervisorAgent:
-    def get_decision(self, profile: dict = None, events: list = None, user_id: str = None):
+    def get_decision(
+        self, 
+        profile: dict = None, 
+        events: list = None, 
+        user_id: str = None,
+        current_time: str = None,
+        current_date: str = None,
+        day_of_week: str = None
+    ):
         start_time = time.time()
         try:
-            logger.info(f"[supervisor] Starting decision for user_id={user_id}")
-            memory_context = self._build_memory_context(profile=profile, events=events, user_id=user_id)
+            logger.info(f"[supervisor] Starting decision for user_id={user_id} current_time={current_time}")
+            memory_context = self._build_memory_context(
+                profile=profile, 
+                events=events, 
+                user_id=user_id,
+                current_time=current_time,
+                current_date=current_date,
+                day_of_week=day_of_week
+            )
             logger.info("[memory] MemoryContext personal_memory count=%s", len(memory_context.get("personal_memory") or []))
             
             crew_start = time.time()
@@ -59,20 +74,20 @@ class SupervisorAgent:
             # Supervisor approval gate: only trigger Execution Agent when confidence >= threshold
             # Guard: prevent duplicate execution
             if confidence >= threshold and not decision.get("execution_done"):
-                # Auto-execute: create calendar events from daily_plan
+                # Auto-execute: save AI tasks to Supabase
                 if daily_plan and user_id:
                     try:
-                        cal_start = time.time()
-                        from google_calendar_service import execute_daily_plan_to_calendar
-                        calendar_events = [{"title": item["activity"], "time": item["time"]} for item in daily_plan]
-                        calendar_result = execute_daily_plan_to_calendar(user_id, calendar_events)
-                        cal_elapsed = time.time() - cal_start
-                        execution_result["calendar"] = calendar_result
+                        task_start = time.time()
+                        from task_service import save_ai_tasks
+                        task_events = [{"title": item["activity"], "time": item["time"]} for item in daily_plan]
+                        task_result = save_ai_tasks(user_id, task_events)
+                        task_elapsed = time.time() - task_start
+                        execution_result["tasks"] = task_result
                         decision["execution_done"] = True  # Mark as executed to prevent re-execution
-                        logger.info(f"[calendar] Auto-executed for user_id={user_id}, created={calendar_result.get('events_created', 0)}, took {cal_elapsed:.2f}s")
+                        logger.info(f"[tasks] Auto-executed for user_id={user_id}, created={task_result.get('tasks_created', 0)}, took {task_elapsed:.2f}s")
                     except Exception as e:
-                        logger.exception(f"[calendar] Auto-execution failed: {e}")
-                        execution_result["calendar"] = {"status": "error", "message": str(e), "events_created": 0}
+                        logger.exception(f"[tasks] Auto-execution failed: {e}")
+                        execution_result["tasks"] = {"status": "error", "message": str(e), "tasks_created": 0}
             else:
                 decision["needs_human"] = True  # request user confirmation
             
@@ -88,8 +103,16 @@ class SupervisorAgent:
         except Exception as e:
             return self._fallback(str(e))
 
-    def _build_memory_context(self, profile: dict = None, events: list = None, user_id: str = None) -> MemoryContext:
-        """Build MemoryContext: profile, personal_memory (from Supabase), events. All agents receive this."""
+    def _build_memory_context(
+        self, 
+        profile: dict = None, 
+        events: list = None, 
+        user_id: str = None,
+        current_time: str = None,
+        current_date: str = None,
+        day_of_week: str = None
+    ) -> MemoryContext:
+        """Build MemoryContext: profile, personal_memory (from Supabase), events, and browser time. All agents receive this."""
         personal_memory: list = []
         if user_id:
             try:
@@ -102,6 +125,9 @@ class SupervisorAgent:
             "profile": profile or {},
             "personal_memory": personal_memory,
             "events": events or [],
+            "current_time": current_time,
+            "current_date": current_date,
+            "day_of_week": day_of_week,
         }
 
     def _fallback(self, error=""):
